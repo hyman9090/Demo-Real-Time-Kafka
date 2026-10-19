@@ -1,0 +1,26 @@
+[project]
+name = "demo-real-time-kafka"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+authors = [
+    { name = "hyman9090", email = "hyman9090@gmail.com" }
+]
+requires-python = ">=3.14"
+dependencies = [
+    "confluent-kafka>=2.16.0",
+    "psycopg[binary]>=3.3.6",
+    "python-dotenv>=1.2.4",
+]
+
+[project.scripts]
+demo-real-time-kafka = "demo_real_time_kafka:main"
+
+[build-system]
+requires = ["uv_build>=0.12.5,<0.13.0"]
+build-backend = "uv_build"
+
+[dependency-groups]
+dev = [
+    "pytest>=9.1.1",
+]

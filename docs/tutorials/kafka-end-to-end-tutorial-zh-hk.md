@@ -9,13 +9,13 @@
 本機會運行一條簡化的即時資料管道：
 
 ```text
-producer.py（Windows 上的 Python）
+src/demo_real_time_kafka/producer.py（Windows 上的 Python）
       │  JSON 訂單
       ▼
 Kafka topic：orders（Docker container）
       │
       ▼
-consumer.py（Windows 上的 Python）
+src/demo_real_time_kafka/consumer.py（Windows 上的 Python）
       │  驗證、寫入成功後提交 offset
       ▼
 PostgreSQL 資料庫：orders（Docker container）
@@ -29,7 +29,7 @@ PostgreSQL 資料庫：orders（Docker container）
 
 - 所有指令以 **VS Code 的 PowerShell terminal** 為準。不是 Command Prompt，也不是 Git Bash。
 - 專案資料夾建議放在本機短路徑，例如 `C:\Users\你的Windows帳戶名稱\kafka-learning-project`；避免 OneDrive 同步目錄、空格及太深的路徑。
-- 本教學固定使用 Python 3.12、Kafka image `apache/kafka:4.0.0`、PostgreSQL image `postgres:17`。不要自行改成 `latest`。
+- 本教學使用 Python 3.14 或以上，由 uv 管理 Python 版本及專案環境；Kafka image 固定為 `apache/kafka:4.0.0`、PostgreSQL image 固定為 `postgres:17`。不要自行改成 `latest`。
 - `.env` 只供本機使用；不要將真正密碼寫入程式碼或提交到 Git。
 - `docker compose down` 會停止並移除 containers，但會保留 Kafka/PostgreSQL volumes。
 - **`docker compose down -v` 會刪除兩個 volumes，永久清除本機 Kafka 與 PostgreSQL 資料。** 除非你確定要由空白資料重新開始，否則不要輸入這個指令。
@@ -63,25 +63,25 @@ PostgreSQL 資料庫：orders（Docker container）
 
 **為甚麼先安裝 VS Code？** 之後會用它建立及編輯 Python、YAML、SQL 檔案，並在內置 terminal 執行 PowerShell。
 
-### 3. 下載及安裝 Python 3.12（64-bit）
+### 3. 安裝 uv
 
-1. 前往 [Python 3.12 官方 Windows 發行頁](https://www.python.org/downloads/windows/)。
-2. 在 Python 3.12 的 release 區域，選擇最新的 **Python 3.12.x** 發行版本。
-3. 到該 release 的 **Files** 區域，下載 **Windows installer (64-bit)**。不要選 embeddable package、source archive 或 32-bit installer。
-4. 開啟下載的 installer。
-5. 第一個畫面如有 **Add python.exe to PATH**，可勾選；確保 **Python Launcher** 功能會安裝，因為本教學用 `py -3.12` 指定 Python 版本。
-6. 按 **Install Now**。如果 Windows 顯示 User Account Control，確認發行者為 Python Software Foundation 後按 **Yes**。
-7. 安裝完成後按 **Close**。
-8. 在 VS Code 選 **Terminal → New Terminal**。如 terminal 不是 PowerShell，按 terminal 右上角下拉箭頭，選 **PowerShell**。
-9. 輸入：
+本教學以 uv 統一管理所需 Python 版本、專案 `.venv`、依賴及 lockfile。
+
+1. 在 Windows 開啟 **Start**，搜尋並開啟 **Terminal** 或 **PowerShell**。
+2. 輸入以下指令安裝 uv：
 
    ```powershell
-   py -3.12 --version
+   winget install --id astral-sh.uv -e
    ```
 
-   預期看到 `Python 3.12.x`。如果出現「`py` is not recognized」，重新開啟 VS Code；仍然失敗就重新執行 Python installer，選 **Modify** 並確認 Python Launcher 已安裝。
+3. 安裝完成後，關閉並重新開啟 VS Code，選 **Terminal → New Terminal**，確保使用 PowerShell。
+4. 輸入：
 
-**為甚麼使用 `py -3.12`？** Windows Python Launcher 可以在多個 Python 版本並存時，明確選中 3.12，而不是依賴 PATH 中剛好排第一的版本。
+   ```powershell
+   uv --version
+   ```
+
+   預期會顯示 uv 版本。若 `uv` 未能識別，重新開啟 terminal；仍有問題就確認 WinGet 安裝已完成，並按 [uv 官方安裝說明](https://docs.astral.sh/uv/getting-started/installation/) 排查。
 
 ### 4. 下載及安裝 Git for Windows
 
@@ -127,7 +127,7 @@ wsl --status
 ### 6. 下載及安裝 Docker Desktop
 
 1. 前往 [Docker Desktop 官方頁](https://www.docker.com/products/docker-desktop/)。
-2. 按 **Download Docker Desktop**，選 Windows 的 **AMD64** 安裝程式（本教學的 Python/PC 是 64-bit x86；如你的 System type 是 ARM，先查 Docker 官方支援說明）。
+2. 按 **Download Docker Desktop**，按你的電腦架構選 Windows 安裝程式（如你的 System type 是 ARM，先查 Docker 官方支援說明）。
 3. 開啟下載的 installer；在設定畫面選用 **Use WSL 2 instead of Hyper-V** 或 **WSL 2 backend**（文字會因版本而略有不同）。
 4. 按 **OK / Install**。如安裝程式要求開啟 Windows features 或重新啟動，按提示完成。
 5. 重新登入/開機後，從 Windows Start 開啟 **Docker Desktop**。
@@ -198,38 +198,27 @@ git init
 
 預期看到 `Initialized empty Git repository ...`。這只在你的電腦建立版本記錄，並沒有建立 GitHub repository 或上傳任何檔案。
 
-### 10. 建立 Python virtual environment
+### 10. 初始化 uv Python 專案
 
-在 terminal 依次輸入：
-
-```powershell
-py -3.12 -m venv .venv
-.\.venv\Scripts\Activate.ps1
-python --version
-```
-
-預期：
-
-- terminal 提示字前出現 `(.venv)`。
-- Python 版本為 `3.12.x`。
-
-如果 PowerShell 顯示執行政策阻止 `Activate.ps1`，**不要改整部電腦的 Execution Policy**。可以不啟動環境，直接使用虛擬環境中的 Python：
+在專案資料夾初始化 uv package project，並指定 Python 3.14。這樣會建立 `src/demo_real_time_kafka/`，Python 模組放入 package，而不是放在專案根目錄：
 
 ```powershell
-.\.venv\Scripts\python.exe --version
+uv init --package --name demo-real-time-kafka --python 3.14
+uv sync
+uv run python --version
 ```
 
-之後把本教學的 `python ...` 換成 `.\.venv\Scripts\python.exe ...`，把 `pip ...` 換成 `.\.venv\Scripts\python.exe -m pip ...`。這樣仍然會用到專案 `.venv`，不需要更改系統設定。
+`uv init --package` 會建立 `pyproject.toml` 及 `src/demo_real_time_kafka/` package；`uv sync` 會按設定取得 Python、建立 `.venv`，並產生 `uv.lock`。預期版本為 `Python 3.14.x` 或以上。日後新增/同步依賴時，無須啟動 `.venv`；用 `uv add` 和 `uv run` 即可。
 
-**虛擬環境是甚麼？** `.venv` 將此練習用的第三方套件隔離起來，不會混入電腦其他 Python project。它不需要手動提交 Git。
+uv 亦會在 `src/demo_real_time_kafka/` 建立 `__init__.py`，用來標示 Python package。這個教學不需要修改它；其餘程式模組會放在同一個資料夾，並透過 `demo_real_time_kafka` package 名稱匯入或執行。
 
 ### 11. 在 VS Code 選擇 `.venv` interpreter
 
 1. 按 `Ctrl+Shift+P` 開啟 Command Palette。
 2. 搜尋並選 **Python: Select Interpreter**。
 3. 在清單選路徑含有本專案 `.venv\Scripts\python.exe` 的項目。
-4. 如清單沒有 `.venv`，按 **Enter interpreter path... → Find...**，選專案資料夾中的 `.venv\Scripts\python.exe`。
-5. VS Code 右下角/狀態列應顯示 Python 3.12 和 `.venv`。
+4. 如清單沒有 `.venv`，先在 project folder 執行 `uv sync`，再重新開啟 interpreter 清單。
+5. VS Code 右下角/狀態列應顯示 Python 3.14 或以上及 `.venv`。這一步只供 VS Code 編輯器使用；在 terminal 執行程式時仍以 `uv run` 為準。
 
 ---
 
@@ -237,7 +226,7 @@ python --version
 
 ### 12. 在 VS Code 建立檔案的方法
 
-接下來每個檔案都由你在 VS Code 建立：
+接下來每個檔案都由你在 VS Code 建立。Python 程式檔放在 `src/demo_real_time_kafka/`；Compose、SQL、環境設定及測試檔則放在專案根目錄或 `tests/`：
 
 1. 在 Explorer 左側，按 **New File** 圖示；或按 **File → New Text File**。
 2. 輸入指定檔名（包括副檔名），例如 `.gitignore`，按 Enter。
@@ -249,7 +238,7 @@ python --version
 
 ### 13. 建立 `.gitignore`
 
-新建檔案 `.gitignore`，貼上並儲存：
+如 `.gitignore` 已由 uv 建立，打開它並合併以下規則；否則新建 `.gitignore`。保留檔案內其他需要的規則：
 
 ```gitignore
 .venv/
@@ -291,27 +280,18 @@ Get-ChildItem -Force .env*
 
 `.env` 的本機開發密碼 `local_dev_only` 只適用於這個練習，不可用於真實服務。保持 `.env` 與 `.env.example` 的設定一致；分享專案時只分享 `.env.example`。
 
-### 15. 建立 `requirements.txt` 並安裝 Python 套件
+### 15. 用 uv 加入及同步 Python 套件
 
-新建 `requirements.txt`：
-
-```text
-confluent-kafka==2.10.1
-psycopg[binary]==3.2.9
-python-dotenv==1.1.1
-pytest==8.4.1
-```
-
-在已啟動 `.venv` 的 terminal 輸入：
+在 project folder 輸入：
 
 ```powershell
-python -m pip install --upgrade pip
-python -m pip install -r requirements.txt
-python -c "import confluent_kafka, psycopg, dotenv, pytest; print('dependencies OK')"
-python -m pip check
+uv add confluent-kafka "psycopg[binary]" python-dotenv
+uv add --dev pytest
+uv sync --locked
+uv run python -c "import confluent_kafka, psycopg, dotenv, pytest; print('dependencies OK')"
 ```
 
-預期最後兩個檢查分別顯示 `dependencies OK` 及 `No broken requirements found`。如果 `python` 指向錯誤版本，回到第 10–11 步，或改用 `.\.venv\Scripts\python.exe -m pip ...`。
+預期最後一行顯示 `dependencies OK`。`uv add` 會將直接依賴記錄在 `pyproject.toml`、更新 `uv.lock`，並同步 `.venv`；`pytest` 會列為開發依賴。之後用 `uv sync` 按 lockfile 還原環境，用 `uv run ...` 在該環境執行指令。毋須手動固定每個套件版本，`uv.lock` 會鎖定實際解析出的版本。
 
 **套件作用：**
 
@@ -460,60 +440,75 @@ docker compose exec kafka /opt/kafka/bin/kafka-topics.sh --bootstrap-server loca
 
 ## 第四部分：手動建立 Python 程式及測試
 
-### 20. 建立 `event.py`：事件格式、驗證及範例資料產生器
+### 20. 建立 `src/demo_real_time_kafka/event.py`：事件格式、驗證及範例資料產生器
 
-在 Explorer 建立 `event.py`，貼上：
+在 Explorer 展開 `src/demo_real_time_kafka/`，於該 package 建立 `event.py`，貼上：
 
 ```python
+# UTC 時間處理及有限數值檢查會用到的標準函式庫。
 from datetime import datetime, timezone
 import math
 
 
 def validate_order(payload: object) -> dict[str, object]:
+    # 先確保訊息最外層是 JSON object，再檢查每個欄位。
     if not isinstance(payload, dict):
         raise ValueError("event must be a JSON object")
 
+    # 一筆有效訂單必須包含以下全部欄位。
     required = ("order_id", "event_time", "customer_id", "items", "amount", "currency")
     missing = [field for field in required if field not in payload]
     if missing:
         raise ValueError(f"missing required field(s): {', '.join(missing)}")
 
+    # ID 和幣別等文字欄位不能是空字串或只有空白。
     for field in ("order_id", "customer_id", "currency"):
         value = payload[field]
         if not isinstance(value, str) or not value.strip():
             raise ValueError(f"{field} must be a non-empty string")
 
+    # ISO 4217 貨幣代碼在這個練習中固定為三個字元，例如 HKD。
     if len(payload["currency"]) != 3:
         raise ValueError("currency must contain exactly 3 characters")
 
+    # event_time 必須是字串，並能解析為帶時區的 ISO 8601 時間。
     event_time = payload["event_time"]
     if not isinstance(event_time, str):
         raise ValueError("event_time must be an ISO 8601 string")
     try:
+        # Python 可將 UTC 時間尾端的 Z 解析成 +00:00。
         parsed_time = datetime.fromisoformat(event_time.replace("Z", "+00:00"))
     except ValueError as exc:
         raise ValueError("event_time must be a valid ISO 8601 timestamp") from exc
     if parsed_time.tzinfo is None or parsed_time.utcoffset() is None:
         raise ValueError("event_time must include a timezone")
 
+    # 商品明細以 JSON array 表示。
     items = payload["items"]
     if not isinstance(items, list):
         raise ValueError("items must be a list")
 
+    # 金額只接受有限的非負整數或浮點數。
     amount = payload["amount"]
+    # bool 是 int 的子類別，所以要先排除 True/False。
     if isinstance(amount, bool) or not isinstance(amount, (int, float)):
         raise ValueError("amount must be a number")
     if not math.isfinite(amount) or amount < 0:
         raise ValueError("amount must be a finite non-negative number")
 
+    # 所有檢查通過後，原樣回傳事件供後續寫入。
     return payload
 
 
 def make_order(sequence: int) -> dict[str, object]:
+    # 依序號建立固定結構的模擬訂單，供 producer 發送。
     return {
+        # 序號固定產生 ID，方便重播同一批資料來測試冪等性。
         "order_id": f"order-{sequence:06d}",
+        # 使用 UTC 並帶時區，避免不同電腦對本地時間有不同解讀。
         "event_time": datetime.now(timezone.utc).isoformat(),
         "customer_id": f"customer-{sequence % 100:03d}",
+        # 商品資料以 list/dict 表示，之後會序列化成 JSON。
         "items": [
             {
                 "sku": f"item-{sequence % 20:03d}",
@@ -526,21 +521,28 @@ def make_order(sequence: int) -> dict[str, object]:
     }
 ```
 
-**解釋：** Producer 和 consumer 共用同一個驗證規則。`event_time` 必須有時區；這樣資料庫不會收到含糊的本地時間。`order_id` 會由序號產生；重跑相同 producer command 會再次產生相同 ID，剛好可示範冪等寫入。
+**程式解釋：**
+
+- `validate_order(payload)` 接收一個待檢查的事件，逐項確認它是 JSON object、必要欄位齊全，而且各欄位格式符合預期；不符合時會拋出 `ValueError`，讓呼叫端明確處理，而不是把壞資料當成有效訂單。
+- `event_time` 會先轉成 Python datetime 解析，並要求帶有時區；這樣資料庫不會收到含糊的本地時間。金額亦會檢查為有限、非負數，並特別拒絕 Python 中屬於 `bool` 子類別的 `True`/`False`。
+- `make_order(sequence)` 依序號產生一筆可重複的範例訂單；時間是目前 UTC 時間，`order_id` 則由序號決定。因此重跑相同 producer command 會再產生相同 ID，可用來示範冪等寫入。
+- Producer 和 consumer 都使用這個模組：producer 用 `make_order()` 造資料，consumer 和資料庫寫入前則用 `validate_order()` 驗證。
 
 ### 21. 建立 `tests` 資料夾及 `tests/test_event.py`
 
 在 Explorer 按 **New Folder**，建立 `tests`。在 `tests` 內建立 `test_event.py`，貼上：
 
 ```python
+# deepcopy 用來避免測試修改共用資料；pytest 提供測試標記和錯誤檢查。
 from copy import deepcopy
 
 import pytest
 
-from event import make_order, validate_order
+from demo_real_time_kafka.event import make_order, validate_order
 
 
 def valid_order() -> dict[str, object]:
+    # 共用合法範例；各測試會複製或修改這份資料。
     return {
         "order_id": "order-test",
         "event_time": "2026-10-13T02:00:00+00:00",
@@ -552,21 +554,26 @@ def valid_order() -> dict[str, object]:
 
 
 def test_valid_order_is_returned() -> None:
+    # 合法訂單應成功通過驗證，並回傳相同物件。
     order = valid_order()
     assert validate_order(order) is order
 
 
+# 將同一測試重複套用到每個必填欄位。
 @pytest.mark.parametrize(
     "field",
     ["order_id", "event_time", "customer_id", "items", "amount", "currency"],
 )
+# 每個案例移除一個欄位，驗證缺少必填欄位會被拒絕。
 def test_missing_required_field_is_rejected(field: str) -> None:
     order = valid_order()
+    # 每次刪除一個必填欄位，確認驗證器指出缺漏。
     del order[field]
     with pytest.raises(ValueError, match=field):
         validate_order(order)
 
 
+# 每個案例提供一種不合法欄位值及預期錯誤提示。
 @pytest.mark.parametrize(
     ("field", "value", "message"),
     [
@@ -584,52 +591,68 @@ def test_invalid_field_is_rejected(
     field: str, value: object, message: str
 ) -> None:
     order = valid_order()
+    # 替換成一種無效值，並確認錯誤訊息包含預期提示。
     order[field] = value
     with pytest.raises(ValueError, match=message):
         validate_order(order)
 
 
 def test_non_object_event_is_rejected() -> None:
+    # JSON event 的最外層必須是 object，不能是 list。
     with pytest.raises(ValueError, match="JSON object"):
         validate_order(["not", "an", "object"])
 
 
 def test_make_order_creates_utc_order() -> None:
+    # 範例產生器應建立固定格式 ID、有效金額及 UTC 時間。
     order = make_order(1)
     assert order["order_id"] == "order-000001"
     assert order["currency"] == "HKD"
     assert order["amount"] >= 0
+    # deepcopy 避免驗證測試意外共用或改動原訂單物件。
     assert validate_order(deepcopy(order))["event_time"] == order["event_time"]
     assert str(order["event_time"]).endswith("+00:00")
 ```
 
+**程式解釋：**
+
+- `valid_order()` 提供一筆固定的合法測試資料；每個測試都可修改它，不用重複手寫整個事件。
+- `test_valid_order_is_returned()` 確認有效事件會通過驗證，而且函式回傳原本的事件物件。
+- 兩個 `pytest.mark.parametrize` 測試會把同一組測試函式套用到多個欄位案例：第一組逐一刪除必要欄位，第二組用空字串、無時區時間、錯誤型別及負數等值確認會被拒絕。
+- `test_non_object_event_is_rejected()` 檢查傳入 list 而不是 object 時會報錯；`test_make_order_creates_utc_order()` 則檢查範例訂單的 ID、幣別、金額及 UTC 時間格式。
+- 這些是 unit tests，只測試事件模組，不會連接 Kafka 或 PostgreSQL。
+
 儲存後執行純 unit test：
 
 ```powershell
-python -m pytest tests/test_event.py -v
+uv run pytest tests/test_event.py -v
 ```
 
 預期所有測試名稱前有 `PASSED`，最後顯示 `passed`。這些測試只檢查 Python 事件驗證，不需要 Kafka 或 PostgreSQL。
 
 ### 22. 建立 `db.py`：PostgreSQL 連線及冪等寫入
 
-在專案根目錄建立 `db.py`，貼上：
+在 `src/demo_real_time_kafka/` 建立 `db.py`，貼上：
 
 ```python
+# os 讀取環境變數；datetime 轉換事件時間。
 import os
 from datetime import datetime
 
+# psycopg 提供 PostgreSQL 連線，Jsonb 用來傳送 JSONB 欄位。
 import psycopg
 from dotenv import load_dotenv
 from psycopg.types.json import Jsonb
 
-from event import validate_order
+from .event import validate_order
 
 
+# 讀取專案根目錄的 .env；已存在的環境變數會優先保留。
 load_dotenv()
 
 
 def get_connection() -> psycopg.Connection[object]:
+    # 用環境設定連線；預設值對應本機 Docker Compose 開發服務。
     return psycopg.connect(
         host=os.environ.get("POSTGRES_HOST", "localhost"),
         port=int(os.environ.get("POSTGRES_PORT", "5432")),
@@ -640,13 +663,16 @@ def get_connection() -> psycopg.Connection[object]:
 
 
 def insert_order(order: dict[str, object]) -> bool:
+    # 資料庫是另一個輸入邊界，因此寫入前再次驗證。
     validate_order(order)
+    # PostgreSQL TIMESTAMPTZ 接收具時區的 datetime。
     event_time = datetime.fromisoformat(
         str(order["event_time"]).replace("Z", "+00:00")
     )
 
     with get_connection() as connection:
         with connection.cursor() as cursor:
+            # 唯一鍵衝突時不重複插入；RETURNING 只在新 row 插入時回傳 ID。
             cursor.execute(
                 """
                 INSERT INTO orders
@@ -655,6 +681,7 @@ def insert_order(order: dict[str, object]) -> bool:
                 ON CONFLICT (order_id) DO NOTHING
                 RETURNING order_id
                 """,
+                # psycopg 會把這些值安全地綁定到 SQL 參數，不拼接 SQL 字串。
                 (
                     order["order_id"],
                     event_time,
@@ -664,28 +691,33 @@ def insert_order(order: dict[str, object]) -> bool:
                     order["currency"],
                 ),
             )
+            # 有回傳 row 代表新資料已插入；沒有則代表訂單 ID 已存在。
             return cursor.fetchone() is not None
 ```
 
 **解釋：**
 
+- `get_connection()` 讀取 `.env` 中的 PostgreSQL 連線設定，並建立 psycopg connection；預設 host 是 `localhost`，因為 Python 程式在 Windows host 執行。
+- `insert_order(order)` 先重用 `validate_order()` 檢查資料，再把時間轉成 datetime，並用 `Jsonb` 將 `items` 傳給 PostgreSQL 的 JSONB 欄位。
 - SQL 使用 `%s` 參數，不要把事件值直接拼入 SQL 字串。
 - `ON CONFLICT (order_id) DO NOTHING` 令同一訂單重播時不會多插入一行。
 - 函式回傳 `True` 表示新資料成功插入；回傳 `False` 表示此 `order_id` 已存在。資料庫連線/SQL 錯誤會明確拋出，不會假裝成功。
-- `.env` 載入後，連線預設 host 是 `localhost`，因為程式在 Windows 執行。
+- `with` 區塊結束時 psycopg 會完成交易並關閉該次 connection；資料庫錯誤會向上拋出，由 consumer 的重試邏輯處理。
 
 ### 23. 建立 `tests/test_db.py`：資料庫 integration test
 
 在 `tests` 資料夾建立 `test_db.py`：
 
 ```python
+# 測試需要 UTC timestamp、UUID 唯一值，以及 package 中的資料庫函式。
 from datetime import datetime, timezone
 from uuid import uuid4
 
-from db import get_connection, insert_order
+from demo_real_time_kafka.db import get_connection, insert_order
 
 
 def test_insert_order_is_idempotent() -> None:
+    # 使用唯一 ID，避免與其他測試或示範訂單重疊。
     order_id = f"order-test-{uuid4()}"
     order = {
         "order_id": order_id,
@@ -697,6 +729,7 @@ def test_insert_order_is_idempotent() -> None:
     }
 
     try:
+        # 首次插入成功；相同 ID 再插入則由 primary key 防止重複。
         assert insert_order(order) is True
         assert insert_order(order) is False
         with get_connection() as connection:
@@ -706,9 +739,11 @@ def test_insert_order_is_idempotent() -> None:
                     (order_id,),
                 )
                 result = cursor.fetchone()
+                # 確認資料庫內同一個 order_id 只有一筆。
                 assert result is not None
                 assert result[0] == 1
     finally:
+        # 測試後只清除本測試建立的那筆資料。
         with get_connection() as connection:
             with connection.cursor() as cursor:
                 cursor.execute(
@@ -719,19 +754,27 @@ def test_insert_order_is_idempotent() -> None:
 
 此測試必須在 PostgreSQL service healthy 後執行，因為它會實際連線資料庫。每次用唯一測試 ID，並於 `finally` 清除該筆資料。
 
+**程式解釋：**
+
+- `test_insert_order_is_idempotent()` 用 UUID 建立本次專屬的 `order_id`，避免與之前測試或正式示範資料撞 ID。
+- 第一次呼叫 `insert_order()` 預期回傳 `True`，第二次相同資料預期回傳 `False`；這同時驗證重複事件不會新增第二筆。
+- 測試再用 `SELECT COUNT(*)` 確認資料庫只保存一列。`finally` 會在測試結束時刪除這個專屬測試 ID，避免測試資料留在 orders table。
+- 因為測試實際執行 SQL，所以需要 PostgreSQL 已啟動且 schema 已建立；它不需要 Kafka。
+
 執行：
 
 ```powershell
-python -m pytest tests/test_db.py -v
+uv run pytest tests/test_db.py -v
 ```
 
 預期 `test_insert_order_is_idempotent PASSED`。若失敗是 connection refused，先執行 `docker compose ps`，確認 db 是 `healthy`；若測試因為 table 不存在而失敗，檢查 PostgreSQL logs 及 schema 初始化情況。
 
 ### 24. 建立 `producer.py`：發送模擬訂單
 
-在專案根目錄建立 `producer.py`：
+在 `src/demo_real_time_kafka/` 建立 `producer.py`：
 
 ```python
+# argparse 處理 CLI 參數；json 編碼事件；其餘模組處理設定、輸出及等待。
 import argparse
 import json
 import os
@@ -741,10 +784,11 @@ import time
 from confluent_kafka import KafkaError, Message, Producer
 from dotenv import load_dotenv
 
-from event import make_order
+from .event import make_order
 
 
 def positive_int(value: str) -> int:
+    # argparse 會將輸入文字轉成整數，並拒絕零或負數。
     parsed = int(value)
     if parsed <= 0:
         raise argparse.ArgumentTypeError("must be greater than 0")
@@ -752,6 +796,7 @@ def positive_int(value: str) -> int:
 
 
 def non_negative_float(value: str) -> float:
+    # 發送間隔可以是 0，但不可為負數。
     parsed = float(value)
     if parsed < 0:
         raise argparse.ArgumentTypeError("must be 0 or greater")
@@ -759,19 +804,23 @@ def non_negative_float(value: str) -> float:
 
 
 def main() -> int:
+    # 設定可由命令列調整的訂單數量和每筆發送間隔。
     parser = argparse.ArgumentParser(description="Publish sample orders to Kafka")
     parser.add_argument("--count", type=positive_int, default=10)
     parser.add_argument("--interval", type=non_negative_float, default=1.0)
     args = parser.parse_args()
 
+    # 載入 .env，並使用預設 topic 和 broker 作為本機設定。
     load_dotenv()
     topic = os.environ.get("KAFKA_TOPIC", "orders")
+    # producer 會非同步傳送；callback 負責收集 broker 回報的錯誤。
     producer = Producer(
         {"bootstrap.servers": os.environ.get("KAFKA_BOOTSTRAP_SERVERS", "localhost:9092")}
     )
     delivery_errors: list[str] = []
 
     def on_delivery(error: KafkaError | None, message: Message) -> None:
+        # Kafka 完成每筆非同步發送後會呼叫此函式。
         if error is not None:
             delivery_errors.append(str(error))
             print(f"Delivery failed: {error}", file=sys.stderr)
@@ -779,7 +828,9 @@ def main() -> int:
         print(f"Delivered order key={message.key().decode('utf-8')} to {message.topic()}")
 
     for sequence in range(1, args.count + 1):
+        # 產生訂單，並將 JSON 文字編碼成 Kafka 可傳輸的 bytes。
         order = make_order(sequence)
+        # Kafka value 是 JSON bytes；key 用 order_id 方便識別及分區。
         encoded_order = json.dumps(order, ensure_ascii=False).encode("utf-8")
         producer.produce(
             topic,
@@ -787,10 +838,13 @@ def main() -> int:
             value=encoded_order,
             callback=on_delivery,
         )
+        # poll 讓 confluent-kafka 處理已完成訊息的 callback。
         producer.poll(0)
         if sequence < args.count:
+            # 除最後一筆外，按指定間隔再發送下一筆。
             time.sleep(args.interval)
 
+    # 等待佇列中的訊息完成，最多 10 秒。
     pending = producer.flush(10)
     if pending:
         print(f"Delivery timed out with {pending} message(s) still pending", file=sys.stderr)
@@ -807,19 +861,28 @@ if __name__ == "__main__":
     raise SystemExit(main())
 ```
 
+**程式解釋：**
+
+- `positive_int()` 和 `non_negative_float()` 是命令列參數檢查器，分別限制訂單數目必須大於 0、發送間隔不可小於 0；輸入不合法時 argparse 會顯示錯誤。
+- `main()` 讀取 `--count` 和 `--interval`，載入 `.env`，再用 Kafka `Producer` 連接 broker。每次迴圈由 `make_order()` 產生一筆訂單，轉成 UTF-8 JSON，並以 `order_id` 作為 Kafka message key。
+- Kafka producer 的發送是非同步的；`on_delivery()` 是 delivery callback，等 broker 回報後才輸出成功或錯誤。`poll(0)` 讓 client 有機會處理已完成的 callback，`flush(10)` 則在程式結束前等候最多 10 秒清空尚未完成的訊息。
+- 只要有訊息仍未完成或 callback 回報 delivery error，程式會以非零 exit code 結束；全部成功才輸出成功筆數並回傳 0。
+- 最後的 `if __name__ == "__main__"` 令這個模組可用 `python -m demo_real_time_kafka.producer` 執行；`raise SystemExit(...)` 會把 `main()` 的回傳值交給作業系統作為程式結束狀態。
+
 儲存後，在 terminal 檢查 CLI 說明：
 
 ```powershell
-python producer.py --help
+uv run python -m demo_real_time_kafka.producer --help
 ```
 
 預期列出 `--count` 及 `--interval`。`--count` 必須大於 0；`--interval` 是每筆訂單間隔秒數，可以是 0。
 
 ### 25. 建立 `consumer.py`：消費、寫入、成功後提交 offset
 
-在專案根目錄建立 `consumer.py`：
+在 `src/demo_real_time_kafka/` 建立 `consumer.py`：
 
 ```python
+# json 解碼 Kafka 訊息；logging 記錄處理結果；time 用於資料庫重試等待。
 import json
 import logging
 import os
@@ -829,10 +892,11 @@ import psycopg
 from confluent_kafka import Consumer, KafkaError
 from dotenv import load_dotenv
 
-from db import insert_order
-from event import validate_order
+from .db import insert_order
+from .event import validate_order
 
 
+# 統一 consumer 的 log 格式，方便辨認錯誤和訊息處理狀態。
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s %(levelname)s %(message)s",
@@ -841,10 +905,12 @@ logger = logging.getLogger("orders-consumer")
 
 
 def persist_with_retries(order: dict[str, object], attempts: int = 3) -> bool:
+    # 僅資料庫錯誤會重試；耗盡次數後保留錯誤給上層處理。
     for attempt in range(1, attempts + 1):
         try:
             return insert_order(order)
         except psycopg.Error:
+            # 只重試 PostgreSQL 錯誤；非資料庫錯誤會直接向外拋出。
             logger.exception("Database write failed (attempt %s/%s)", attempt, attempts)
             if attempt == attempts:
                 raise
@@ -853,8 +919,10 @@ def persist_with_retries(order: dict[str, object], attempts: int = 3) -> bool:
 
 
 def main() -> None:
+    # 載入 broker、topic 及 consumer group 等本機設定。
     load_dotenv()
     topic = os.environ.get("KAFKA_TOPIC", "orders")
+    # 關閉自動提交，確保只有資料庫寫入成功後才提交 offset。
     consumer = Consumer(
         {
             "bootstrap.servers": os.environ.get(
@@ -870,19 +938,23 @@ def main() -> None:
 
     try:
         while True:
+            # poll 會等待訊息；逾時回傳 None，讓迴圈繼續等待。
             message = consumer.poll(1.0)
             if message is None:
                 continue
             if message.error():
+                # 分區讀取到尾端是正常狀態，其他 Kafka 錯誤則停止處理。
                 if message.error().code() == KafkaError._PARTITION_EOF:
                     continue
                 raise RuntimeError(f"Kafka message error: {message.error()}")
 
             location = (
+                # 記錄訊息位置，出錯時可追查 topic、partition 和 offset。
                 f"topic={message.topic()} "
                 f"partition={message.partition()} offset={message.offset()}"
             )
             try:
+                # Kafka 傳來 bytes，先解碼 JSON，再套用共用事件驗證。
                 value = message.value()
                 if value is None:
                     raise ValueError("message value must not be null")
@@ -892,9 +964,11 @@ def main() -> None:
                 logger.exception("Invalid message; stopping without committing (%s)", location)
                 raise
 
+            # 先確保資料庫已新增或確認 duplicate，再提交 Kafka offset。
             inserted = persist_with_retries(order)
             committed = consumer.commit(message=message, asynchronous=False)
             if committed is not None:
+                # 同步 commit 可能回傳各分區結果，檢查並明確報告錯誤。
                 commit_errors = [partition.error for partition in committed if partition.error]
                 if commit_errors:
                     raise RuntimeError(f"Kafka offset commit failed: {commit_errors}")
@@ -904,6 +978,7 @@ def main() -> None:
     except KeyboardInterrupt:
         logger.info("Stopping consumer after Ctrl+C")
     finally:
+        # 不論正常停止或發生錯誤，都關閉 consumer 並離開 group。
         consumer.close()
         logger.info("Consumer closed")
 
@@ -921,6 +996,14 @@ if __name__ == "__main__":
 5. 無效 JSON/事件會記錄 topic、partition、offset 並停止，不會靜默略過。該 partition 可能會在下次啟動時再次遇到同一筆 poison message；修正/處理訊息後才可繼續。
 6. `Ctrl+C` 會進入 `finally` 關閉 consumer。
 
+**程式執行順序：**
+
+- `main()` 載入環境設定，建立 Kafka consumer，指定 broker、group ID、topic、起始 offset 規則及關閉自動提交，之後訂閱 topic 並持續 `poll()` 等待訊息。
+- 每收到一筆訊息，程式先檢查 Kafka message error，再把 bytes 解碼為 UTF-8 JSON，並用 `validate_order()` 確認事件格式。無效訊息會記錄位置後拋錯，offset 不會提交。
+- `persist_with_retries()` 只對 psycopg 資料庫錯誤重試，最多三次；每次失敗會記錄 traceback 並逐次延長等待時間。重試用盡後錯誤會向外拋出，該筆訊息不會 commit。
+- 資料庫成功新增訂單或確認該 ID 已存在後，consumer 才同步提交該筆 Kafka offset；若 commit 回報錯誤，程式會明確報錯，而不會記錄成成功處理。
+- 收到 `Ctrl+C` 時會進入 `finally`，呼叫 `consumer.close()` 釋放 consumer 資源；其他未預期錯誤則會向外傳出，方便看到失敗原因。
+
 ---
 
 ## 第五部分：端對端運行與驗收
@@ -934,13 +1017,19 @@ kafka-learning-project/
 ├── .env
 ├── .env.example
 ├── .gitignore
-├── consumer.py
-├── db.py
+├── .python-version
 ├── docker-compose.yml
-├── event.py
-├── producer.py
-├── requirements.txt
+├── pyproject.toml
+├── README.md
 ├── schema.sql
+├── src/
+│   └── demo_real_time_kafka/
+│       ├── __init__.py
+│       ├── consumer.py
+│       ├── db.py
+│       ├── event.py
+│       └── producer.py
+├── uv.lock
 └── tests/
     ├── test_db.py
     └── test_event.py
@@ -965,8 +1054,8 @@ docker compose ps
 再跑測試：
 
 ```powershell
-python -m pytest tests/test_event.py -v
-python -m pytest tests/test_db.py -v
+uv run pytest tests/test_event.py -v
+uv run pytest tests/test_db.py -v
 ```
 
 第一個測試不依賴 Docker；第二個測試需要 db healthy。若 db 測試失敗，先看：
@@ -980,7 +1069,7 @@ docker compose logs --tail 80 db
 先送 5 筆訂單：
 
 ```powershell
-python producer.py --count 5 --interval 0
+uv run python -m demo_real_time_kafka.producer --count 5 --interval 0
 ```
 
 預期每筆有 `Delivered order key=order-...`，最後顯示 `Successfully delivered 5 order(s) to topic 'orders'`。
@@ -997,19 +1086,19 @@ docker compose exec kafka /opt/kafka/bin/kafka-console-consumer.sh --bootstrap-s
 
 ### 29. 開兩個 terminal 啟動 Python consumer 和 producer
 
-在 VS Code 選 **Terminal → New Terminal** 兩次，建立兩個 PowerShell terminal。每個新 terminal 都輸入以下指令確認位置並啟動 `.venv`（若提示執行政策阻止，就沿用第 10 步的完整 Python 路徑做法）：
+在 VS Code 選 **Terminal → New Terminal** 兩次，建立兩個 PowerShell terminal。每個新 terminal 都輸入以下指令確認位置，並同步 uv 環境：
 
 ```powershell
 Get-Location
-.\.venv\Scripts\Activate.ps1
+uv sync
 ```
 
-確保兩個 terminal 都位於 project folder，且都使用 `.venv`。
+確保兩個 terminal 都位於 project folder。`uv run` 會自動使用 `.venv`，毋須手動啟動虛擬環境。
 
 **Terminal A：先啟動 consumer**
 
 ```powershell
-python consumer.py
+uv run python -m demo_real_time_kafka.consumer
 ```
 
 預期看到：
@@ -1023,7 +1112,7 @@ Subscribed to topic 'orders'; press Ctrl+C to stop
 **Terminal B：發送另外 10 筆**
 
 ```powershell
-python producer.py --count 10 --interval 0
+uv run python -m demo_real_time_kafka.producer --count 10 --interval 0
 ```
 
 預期 producer 報告 10 筆成功；Terminal A 陸續顯示 10 筆訊息已處理。第二批的 `order-000001` 至 `order-000005` 與第一批重複，會被當成 duplicate；只有 `order-000006` 至 `order-000010` 是新 row。因此兩批合計有 **10 個不同訂單**，不是 15 個。
@@ -1059,7 +1148,7 @@ docker compose exec db psql -U de_user -d orders -c "SELECT order_id, items FROM
 保持 Terminal A 的 consumer 開啟，再於另一個 terminal 重跑同一個 producer command：
 
 ```powershell
-python producer.py --count 10 --interval 0
+uv run python -m demo_real_time_kafka.producer --count 10 --interval 0
 ```
 
 producer 再次產生 `order-000001` 至 `order-000010`，Kafka 會接收這些訊息；consumer 會看到 `duplicate (already stored)`，但仍會在資料庫確認成功後提交 offset。
@@ -1079,7 +1168,7 @@ docker compose exec db psql -U de_user -d orders -c "SELECT COUNT(*) FROM orders
 3. 再次執行：
 
    ```powershell
-   python consumer.py
+   uv run python -m demo_real_time_kafka.consumer
    ```
 
 4. 因 `orders-to-postgres` group 已有 committed offset，consumer 應由上次成功位置之後開始，而不是每次都從 topic 開頭重播全部資料。
@@ -1114,7 +1203,7 @@ Python consumer 的 logs 在 Terminal A；producer 的 delivery logs 在執行 p
 - **PostgreSQL table 不存在：** 確認 `schema.sql` 位置、Compose bind mount，以及資料庫初始化 logs。PostgreSQL init scripts 只會在 data directory 首次初始化時執行。
 - **Port already allocated：** 可能有本機程式已使用 `5432` 或 `9092`。先找出並正常停止佔用程式；不要未理解就更改 Compose port，因為 Python `.env` 也要一起對應。
 - **`docker compose config` 顯示 `${...}`/設定錯誤：** 確認已在 project folder、`.env` 存在且檔名沒有變成 `.env.txt`。
-- **PowerShell 找不到 `python` 或套件：** 重新選 `.venv` interpreter；確認 terminal 在 project folder，前面有 `(.venv)`。
+- **`uv run` 找不到套件或 Python：** 確認 terminal 在 project folder，`pyproject.toml` 和 `uv.lock` 存在，再執行 `uv sync`。用 `uv run python --version` 確認版本；不要改用系統 Python 或手動啟動 `.venv`。
 - **Topic 已存在：** `--create-if-not-exists` 是安全的；再執行 `--describe` 確認 partition 數。
 
 在這個簡化流程中，無效訊息會阻塞該 partition；後續延伸可新增 DLQ topic，但要先設計好「成功寫入 DLQ 後才提交原 topic offset」。
@@ -1168,7 +1257,7 @@ docker compose down -v
 
 ```powershell
 git status --short
-git add .gitignore .env.example requirements.txt docker-compose.yml schema.sql event.py db.py producer.py consumer.py tests
+git add .gitignore .env.example .python-version pyproject.toml uv.lock docker-compose.yml schema.sql src tests
 git status --short
 ```
 
@@ -1184,7 +1273,7 @@ git commit -m "feat: build local kafka orders pipeline"
 
 ## 完成檢查表
 
-- [ ] `py -3.12 --version` 顯示 Python 3.12。
+- [ ] `uv --version` 顯示 uv 已安裝，`uv run python --version` 顯示 Python 3.14 或以上。
 - [ ] `git --version`、`docker --version`、`docker compose version` 成功。
 - [ ] `docker info` 能顯示 Server。
 - [ ] VS Code 使用專案 `.venv` interpreter。
