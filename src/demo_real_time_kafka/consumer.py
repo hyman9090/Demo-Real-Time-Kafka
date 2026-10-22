@@ -1,4 +1,5 @@
 # json 解碼 Kafka 訊息；logging 記錄處理結果；time 用於資料庫重試等待。
+import argparse
 import json
 import logging
 import os
@@ -34,22 +35,33 @@ def persist_with_retries(order: dict[str, object], attempts: int = 3) -> bool:
 
 
 def main() -> None:
-    # 載入 broker、topic 及 consumer group 等本機設定。
+    # 載入 .env；命令列參數可為每個 consumer group 指定 topic 和 group ID。
     load_dotenv()
-    topic = os.environ.get("KAFKA_TOPIC", "orders")
+    parser = argparse.ArgumentParser(description="Consume orders from Kafka")
+    parser.add_argument("--topic", default=os.environ.get("KAFKA_TOPIC", "orders"))
+    parser.add_argument(
+        "--group-id",
+        default=os.environ.get("KAFKA_GROUP_ID", "orders-to-postgres"),
+    )
+    args = parser.parse_args()
+    topic = args.topic
     # 關閉自動提交，確保只有資料庫寫入成功後才提交 offset。
     consumer = Consumer(
         {
             "bootstrap.servers": os.environ.get(
                 "KAFKA_BOOTSTRAP_SERVERS", "localhost:9092"
             ),
-            "group.id": os.environ.get("KAFKA_GROUP_ID", "orders-to-postgres"),
+            "group.id": args.group_id,
             "auto.offset.reset": "earliest",
             "enable.auto.commit": False,
         }
     )
     consumer.subscribe([topic])
-    logger.info("Subscribed to topic '%s'; press Ctrl+C to stop", topic)
+    logger.info(
+        "Group '%s' subscribed to topic '%s'; press Ctrl+C to stop",
+        args.group_id,
+        topic,
+    )
 
     try:
         while True:
@@ -75,7 +87,7 @@ def main() -> None:
                     raise ValueError("message value must not be null")
                 payload = json.loads(value.decode("utf-8"))
                 order = validate_order(payload)
-            except UnicodeDecodeError, json.JSONDecodeError, ValueError:
+            except (UnicodeDecodeError, json.JSONDecodeError, ValueError):
                 logger.exception(
                     "Invalid message; stopping without committing (%s)", location
                 )

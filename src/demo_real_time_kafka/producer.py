@@ -27,6 +27,16 @@ def non_negative_float(value: str) -> float:
     return parsed
 
 
+def parse_topics(value: str) -> tuple[str, ...]:
+    # 拒絕空 topic、空白項目及重複名稱，避免設定錯誤時靜默少發訊息。
+    topics = tuple(topic.strip() for topic in value.split(","))
+    if not topics or any(not topic for topic in topics):
+        raise ValueError("KAFKA_TOPICS must contain non-empty comma-separated names")
+    if len(set(topics)) != len(topics):
+        raise ValueError("KAFKA_TOPICS must not contain duplicate names")
+    return topics
+
+
 def main() -> int:
     # 設定可由命令列調整的訂單數量和每筆發送間隔。
     parser = argparse.ArgumentParser(description="Publish sample orders to Kafka")
@@ -34,9 +44,9 @@ def main() -> int:
     parser.add_argument("--interval", type=non_negative_float, default=1.0)
     args = parser.parse_args()
 
-    # 載入 .env，並使用預設 topic 和 broker 作為本機設定。
+    # 載入 .env，並使用預設 topics 和 broker 作為本機設定。
     load_dotenv()
-    topic = os.environ.get("KAFKA_TOPIC", "orders")
+    topics = parse_topics(os.environ.get("KAFKA_TOPICS", "orders,orders-audit"))
     # producer 會非同步傳送；callback 負責收集 broker 回報的錯誤。
     producer = Producer(
         {"bootstrap.servers": os.environ.get("KAFKA_BOOTSTRAP_SERVERS", "localhost:9092")}
@@ -56,14 +66,15 @@ def main() -> int:
         order = make_order(sequence)
         # Kafka value 是 JSON bytes；key 用 order_id 方便識別及分區。
         encoded_order = json.dumps(order, ensure_ascii=False).encode("utf-8")
-        producer.produce(
-            topic,
-            key=str(order["order_id"]).encode("utf-8"),
-            value=encoded_order,
-            callback=on_delivery,
-        )
-        # poll 讓 confluent-kafka 處理已完成訊息的 callback。
-        producer.poll(0)
+        for topic in topics:
+            producer.produce(
+                topic,
+                key=str(order["order_id"]).encode("utf-8"),
+                value=encoded_order,
+                callback=on_delivery,
+            )
+            # poll 讓 confluent-kafka 處理已完成訊息的 callback。
+            producer.poll(0)
         if sequence < args.count:
             # 除最後一筆外，按指定間隔再發送下一筆。
             time.sleep(args.interval)
@@ -77,7 +88,8 @@ def main() -> int:
         print(f"{len(delivery_errors)} message(s) failed delivery", file=sys.stderr)
         return 1
 
-    print(f"Successfully delivered {args.count} order(s) to topic '{topic}'")
+    topic_list = "', '".join(topics)
+    print(f"Successfully delivered {args.count} order(s) to topic(s) '{topic_list}'")
     return 0
 
 

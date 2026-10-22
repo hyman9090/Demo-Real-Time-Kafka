@@ -10,18 +10,20 @@
 
 ```text
 src/demo_real_time_kafka/producer.py（Windows 上的 Python）
-      │  JSON 訂單
+      │  JSON 訂單（各發一份到兩個 topic）
       ▼
-Kafka topic：orders（Docker container）
-      │
-      ▼
-src/demo_real_time_kafka/consumer.py（Windows 上的 Python）
-      │  驗證、寫入成功後提交 offset
+Kafka topics：orders、orders-audit（各 2 partitions）
+      ├── orders → orders-to-postgres group（1 個 consumer）
+      └── orders-audit → orders-audit-1、orders-audit-2 groups
+                         （兩個 group 各自收到完整訊息）
+      │  驗證、寫入成功後提交各 group 的 offset
       ▼
 PostgreSQL 資料庫：orders（Docker container）
 ```
 
-你會學到 producer、topic、consumer、consumer group、offset、冪等寫入、Docker Compose、基本錯誤處理，以及用 SQL 驗證資料。
+你會學到 producer、兩個 topic、每個 topic 的兩個 partition、三個 consumer group、offset、冪等寫入、Docker Compose、基本錯誤處理，以及用 SQL 驗證資料。
+
+`orders-audit` 在這個練習中是展示 topic fan-out 的副本，內容與 `orders` 相同；它不是另一種 audit event schema。
 
 **本教學第一版不會做** dashboard、雲端部署、Spark/Flink、Kubernetes、Schema Registry 或 dead-letter topic。Kafka 和 PostgreSQL 在 Docker 中執行；Python 程式在 Windows host 執行，避免一開始同時處理容器內 Python networking。
 
@@ -257,6 +259,7 @@ __pycache__/
 
 ```dotenv
 KAFKA_BOOTSTRAP_SERVERS=localhost:9092
+KAFKA_TOPICS=orders,orders-audit
 KAFKA_TOPIC=orders
 KAFKA_GROUP_ID=orders-to-postgres
 POSTGRES_HOST=localhost
@@ -347,7 +350,7 @@ services:
       KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
       KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
       KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
-      KAFKA_NUM_PARTITIONS: 1
+      KAFKA_NUM_PARTITIONS: 2
     volumes:
       - kafka_data:/var/lib/kafka/data
 
@@ -377,7 +380,7 @@ volumes:
 
 - Compose 會啟動 `kafka` 和 `db` 兩個 services。
 - `9092:9092` 及 `5432:5432` 將 host ports 映射到容器，讓 Windows 上的 Python 可連線。
-- Kafka 用 KRaft mode，單一 node 同時做 broker/controller；練習版只有 1 broker、1 partition。
+- Kafka 用 KRaft mode，單一 node 同時做 broker/controller；練習版有 1 broker，每個 topic 有 2 partitions。
 - PostgreSQL 第一次初始化資料目錄時會執行 `schema.sql`。
 - named volumes 將資料保存在 container 以外，普通 `docker compose down` 不會刪除資料。
 - `localhost` 是供 Windows host 程式連線的 advertised address。Python 程式不要設定成 `kafka` 或 `db`；那些名稱只適用於其他 Compose containers 互相連線。
@@ -422,19 +425,28 @@ docker compose exec db psql -U de_user -d orders -c "\dt"
 
 預期列出 `orders` table。若 `orders` 不在清單，先看 `docker compose logs db`；PostgreSQL 的 init SQL 只會在空白資料 volume 首次初始化時執行。
 
-建立 `orders` topic（重複執行亦安全）：
+分別建立 `orders` 和 `orders-audit` topic，每個 topic 有 2 partitions（重複執行亦安全）：
 
 ```powershell
-docker compose exec kafka /opt/kafka/bin/kafka-topics.sh --bootstrap-server localhost:9092 --create --if-not-exists --topic orders --partitions 1 --replication-factor 1
+docker compose exec kafka /opt/kafka/bin/kafka-topics.sh --bootstrap-server localhost:9092 --create --if-not-exists --topic orders --partitions 2 --replication-factor 1
+docker compose exec kafka /opt/kafka/bin/kafka-topics.sh --bootstrap-server localhost:9092 --create --if-not-exists --topic orders-audit --partitions 2 --replication-factor 1
 ```
 
-再檢查 topic：
+先查看兩個 topic 的 partition 數：
 
 ```powershell
 docker compose exec kafka /opt/kafka/bin/kafka-topics.sh --bootstrap-server localhost:9092 --describe --topic orders
+docker compose exec kafka /opt/kafka/bin/kafka-topics.sh --bootstrap-server localhost:9092 --describe --topic orders-audit
 ```
 
-預期看到 `Topic: orders` 及 `PartitionCount: 1`。topic 是 Kafka 內訊息的分類/串流名稱；這條練習只建立一個 partition，方便先理解基本流程。
+`--create-if-not-exists` 不會更改已存在的 topic。**只對 `PartitionCount` 少於 2 的 topic** 執行相應的 `--alter` 指令；已經是 2 partitions 的 topic 不要再 alter。partition 數只可增加，不可減少。
+
+```powershell
+docker compose exec kafka /opt/kafka/bin/kafka-topics.sh --bootstrap-server localhost:9092 --alter --topic orders --partitions 2
+docker compose exec kafka /opt/kafka/bin/kafka-topics.sh --bootstrap-server localhost:9092 --alter --topic orders-audit --partitions 2
+```
+
+若某個既有 topic 已經多於 2 partitions，Kafka 不支援縮減；保留現有設定或以全新 topic 開始練習。完成後再次執行以上兩條 `--describe` 指令確認兩個結果都有 `PartitionCount: 2`。topic 是 Kafka 內訊息的分類/串流名稱；partition 讓 topic 的訊息分開儲存及分配。此設定只有一個 broker，所以 replication factor 保持 1。
 
 ---
 
@@ -803,6 +815,16 @@ def non_negative_float(value: str) -> float:
     return parsed
 
 
+def parse_topics(value: str) -> tuple[str, ...]:
+    # 拒絕空 topic、空白項目及重複名稱，避免設定錯誤時靜默少發訊息。
+    topics = tuple(topic.strip() for topic in value.split(","))
+    if not topics or any(not topic for topic in topics):
+        raise ValueError("KAFKA_TOPICS must contain non-empty comma-separated names")
+    if len(set(topics)) != len(topics):
+        raise ValueError("KAFKA_TOPICS must not contain duplicate names")
+    return topics
+
+
 def main() -> int:
     # 設定可由命令列調整的訂單數量和每筆發送間隔。
     parser = argparse.ArgumentParser(description="Publish sample orders to Kafka")
@@ -810,9 +832,9 @@ def main() -> int:
     parser.add_argument("--interval", type=non_negative_float, default=1.0)
     args = parser.parse_args()
 
-    # 載入 .env，並使用預設 topic 和 broker 作為本機設定。
+    # 載入 .env，並使用預設 topics 和 broker 作為本機設定。
     load_dotenv()
-    topic = os.environ.get("KAFKA_TOPIC", "orders")
+    topics = parse_topics(os.environ.get("KAFKA_TOPICS", "orders,orders-audit"))
     # producer 會非同步傳送；callback 負責收集 broker 回報的錯誤。
     producer = Producer(
         {"bootstrap.servers": os.environ.get("KAFKA_BOOTSTRAP_SERVERS", "localhost:9092")}
@@ -832,14 +854,15 @@ def main() -> int:
         order = make_order(sequence)
         # Kafka value 是 JSON bytes；key 用 order_id 方便識別及分區。
         encoded_order = json.dumps(order, ensure_ascii=False).encode("utf-8")
-        producer.produce(
-            topic,
-            key=str(order["order_id"]).encode("utf-8"),
-            value=encoded_order,
-            callback=on_delivery,
-        )
-        # poll 讓 confluent-kafka 處理已完成訊息的 callback。
-        producer.poll(0)
+        for topic in topics:
+            producer.produce(
+                topic,
+                key=str(order["order_id"]).encode("utf-8"),
+                value=encoded_order,
+                callback=on_delivery,
+            )
+            # poll 讓 confluent-kafka 處理已完成訊息的 callback。
+            producer.poll(0)
         if sequence < args.count:
             # 除最後一筆外，按指定間隔再發送下一筆。
             time.sleep(args.interval)
@@ -853,7 +876,8 @@ def main() -> int:
         print(f"{len(delivery_errors)} message(s) failed delivery", file=sys.stderr)
         return 1
 
-    print(f"Successfully delivered {args.count} order(s) to topic '{topic}'")
+    topic_list = "', '".join(topics)
+    print(f"Successfully delivered {args.count} order(s) to topic(s) '{topic_list}'")
     return 0
 
 
@@ -864,7 +888,7 @@ if __name__ == "__main__":
 **程式解釋：**
 
 - `positive_int()` 和 `non_negative_float()` 是命令列參數檢查器，分別限制訂單數目必須大於 0、發送間隔不可小於 0；輸入不合法時 argparse 會顯示錯誤。
-- `main()` 讀取 `--count` 和 `--interval`，載入 `.env`，再用 Kafka `Producer` 連接 broker。每次迴圈由 `make_order()` 產生一筆訂單，轉成 UTF-8 JSON，並以 `order_id` 作為 Kafka message key。
+- `main()` 讀取 `--count` 和 `--interval`，載入 `.env` 的 `KAFKA_TOPICS`，再用 Kafka `Producer` 連接 broker。每次迴圈由 `make_order()` 產生一筆訂單，轉成 UTF-8 JSON，並以 `order_id` 作為 Kafka message key，將同一筆事件發送到兩個 topic。
 - Kafka producer 的發送是非同步的；`on_delivery()` 是 delivery callback，等 broker 回報後才輸出成功或錯誤。`poll(0)` 讓 client 有機會處理已完成的 callback，`flush(10)` 則在程式結束前等候最多 10 秒清空尚未完成的訊息。
 - 只要有訊息仍未完成或 callback 回報 delivery error，程式會以非零 exit code 結束；全部成功才輸出成功筆數並回傳 0。
 - 最後的 `if __name__ == "__main__"` 令這個模組可用 `python -m demo_real_time_kafka.producer` 執行；`raise SystemExit(...)` 會把 `main()` 的回傳值交給作業系統作為程式結束狀態。
@@ -875,7 +899,7 @@ if __name__ == "__main__":
 uv run python -m demo_real_time_kafka.producer --help
 ```
 
-預期列出 `--count` 及 `--interval`。`--count` 必須大於 0；`--interval` 是每筆訂單間隔秒數，可以是 0。
+預期列出 `--count` 及 `--interval`。`--count` 必須大於 0；`--interval` 是每筆訂單間隔秒數，可以是 0。`KAFKA_TOPICS` 以逗號分隔 topic 名稱；預設每筆訂單都會發送到 `orders` 和 `orders-audit`。
 
 ### 25. 建立 `consumer.py`：消費、寫入、成功後提交 offset
 
@@ -883,6 +907,7 @@ uv run python -m demo_real_time_kafka.producer --help
 
 ```python
 # json 解碼 Kafka 訊息；logging 記錄處理結果；time 用於資料庫重試等待。
+import argparse
 import json
 import logging
 import os
@@ -919,22 +944,33 @@ def persist_with_retries(order: dict[str, object], attempts: int = 3) -> bool:
 
 
 def main() -> None:
-    # 載入 broker、topic 及 consumer group 等本機設定。
+    # 載入 .env；命令列參數可為每個 consumer group 指定 topic 和 group ID。
     load_dotenv()
-    topic = os.environ.get("KAFKA_TOPIC", "orders")
+    parser = argparse.ArgumentParser(description="Consume orders from Kafka")
+    parser.add_argument("--topic", default=os.environ.get("KAFKA_TOPIC", "orders"))
+    parser.add_argument(
+        "--group-id",
+        default=os.environ.get("KAFKA_GROUP_ID", "orders-to-postgres"),
+    )
+    args = parser.parse_args()
+    topic = args.topic
     # 關閉自動提交，確保只有資料庫寫入成功後才提交 offset。
     consumer = Consumer(
         {
             "bootstrap.servers": os.environ.get(
                 "KAFKA_BOOTSTRAP_SERVERS", "localhost:9092"
             ),
-            "group.id": os.environ.get("KAFKA_GROUP_ID", "orders-to-postgres"),
+            "group.id": args.group_id,
             "auto.offset.reset": "earliest",
             "enable.auto.commit": False,
         }
     )
     consumer.subscribe([topic])
-    logger.info("Subscribed to topic '%s'; press Ctrl+C to stop", topic)
+    logger.info(
+        "Group '%s' subscribed to topic '%s'; press Ctrl+C to stop",
+        args.group_id,
+        topic,
+    )
 
     try:
         while True:
@@ -998,11 +1034,17 @@ if __name__ == "__main__":
 
 **程式執行順序：**
 
-- `main()` 載入環境設定，建立 Kafka consumer，指定 broker、group ID、topic、起始 offset 規則及關閉自動提交，之後訂閱 topic 並持續 `poll()` 等待訊息。
+- `main()` 載入環境設定，並以 `--topic` 和 `--group-id` 指定此 consumer group 的 topic 及 group ID；建立 Kafka consumer 後，持續 `poll()` 等待訊息。
 - 每收到一筆訊息，程式先檢查 Kafka message error，再把 bytes 解碼為 UTF-8 JSON，並用 `validate_order()` 確認事件格式。無效訊息會記錄位置後拋錯，offset 不會提交。
 - `persist_with_retries()` 只對 psycopg 資料庫錯誤重試，最多三次；每次失敗會記錄 traceback 並逐次延長等待時間。重試用盡後錯誤會向外拋出，該筆訊息不會 commit。
 - 資料庫成功新增訂單或確認該 ID 已存在後，consumer 才同步提交該筆 Kafka offset；若 commit 回報錯誤，程式會明確報錯，而不會記錄成成功處理。
 - 收到 `Ctrl+C` 時會進入 `finally`，呼叫 `consumer.close()` 釋放 consumer 資源；其他未預期錯誤則會向外傳出，方便看到失敗原因。
+
+consumer 預設使用 `.env` 的 `KAFKA_TOPIC` 和 `KAFKA_GROUP_ID`；命令列參數可覆寫它們，讓三個 consumer group 同時以不同設定執行。檢查參數：
+
+```powershell
+uv run python -m demo_real_time_kafka.consumer --help
+```
 
 ---
 
@@ -1032,7 +1074,8 @@ kafka-learning-project/
 ├── uv.lock
 └── tests/
     ├── test_db.py
-    └── test_event.py
+    ├── test_event.py
+    └── test_producer.py
 ```
 
 確認 `.env` 存在但被 `.gitignore` 排除：
@@ -1045,7 +1088,38 @@ git status --short
 
 ### 27. 再跑一次 unit tests 及 DB integration test
 
-先確認 Compose services 狀態：
+在 `tests` 資料夾建立 `test_producer.py`，貼上：
+
+```python
+import pytest
+
+from demo_real_time_kafka.producer import parse_topics
+
+
+def test_parse_topics_returns_comma_separated_names() -> None:
+    assert parse_topics("orders, orders-audit") == ("orders", "orders-audit")
+
+
+@pytest.mark.parametrize("value", ["", "orders,", ",orders", "orders,,orders-audit"])
+def test_parse_topics_rejects_empty_names(value: str) -> None:
+    with pytest.raises(ValueError, match="non-empty"):
+        parse_topics(value)
+
+
+def test_parse_topics_rejects_duplicates() -> None:
+    with pytest.raises(ValueError, match="duplicate"):
+        parse_topics("orders,orders")
+```
+
+先執行不需要 Docker 的 unit tests：
+
+```powershell
+uv run pytest tests/test_event.py tests/test_producer.py -v
+```
+
+兩個測試檔都應通過；`test_producer.py` 會確認逗號分隔 topic 設定、空名稱及重複名稱的處理。
+
+再確認 Compose services 狀態：
 
 ```powershell
 docker compose ps
@@ -1054,17 +1128,16 @@ docker compose ps
 再跑測試：
 
 ```powershell
-uv run pytest tests/test_event.py -v
 uv run pytest tests/test_db.py -v
 ```
 
-第一個測試不依賴 Docker；第二個測試需要 db healthy。若 db 測試失敗，先看：
+DB integration test 需要 db healthy。若 db 測試失敗，先看：
 
 ```powershell
 docker compose logs --tail 80 db
 ```
 
-### 28. 在 topic 發送及檢視第一批訊息
+### 28. 在兩個 topic 發送及檢視第一批訊息
 
 先送 5 筆訂單：
 
@@ -1072,62 +1145,77 @@ docker compose logs --tail 80 db
 uv run python -m demo_real_time_kafka.producer --count 5 --interval 0
 ```
 
-預期每筆有 `Delivered order key=order-...`，最後顯示 `Successfully delivered 5 order(s) to topic 'orders'`。
+預期每筆訂單會分別顯示已送到 `orders` 和 `orders-audit`，最後顯示 `Successfully delivered 5 order(s) to topic(s) 'orders', 'orders-audit'`。
 
-用 Kafka console consumer 由 topic 開頭讀 5 筆：
+分別用 Kafka console consumer 由兩個 topic 開頭讀 5 筆：
 
 ```powershell
 docker compose exec kafka /opt/kafka/bin/kafka-console-consumer.sh --bootstrap-server localhost:9092 --topic orders --from-beginning --max-messages 5
+docker compose exec kafka /opt/kafka/bin/kafka-console-consumer.sh --bootstrap-server localhost:9092 --topic orders-audit --from-beginning --max-messages 5
 ```
 
-預期見到 5 行 JSON，每行有 `order_id`、`event_time`、`customer_id`、`items`、`amount`、`currency`。這個 console consumer 只作檢視，不寫入 PostgreSQL，也不使用 Python consumer 的 group。
+每個指令預期見到 5 行 JSON，每行有 `order_id`、`event_time`、`customer_id`、`items`、`amount`、`currency`。這個 console consumer 只作檢視，不寫入 PostgreSQL，也不使用 Python consumer 的 group。
 
-> **新手常見混淆：** 這 5 筆訊息仍留在 Kafka。稍後第一次啟動 `orders-to-postgres` group 時，因為它沒有 committed offset 且設定 `earliest`，Python consumer 會從頭讀取這 5 筆。所以稍後的 DB 初始計數會先包含這 5 筆，而不是只計算之後發送的訊息。
+> **新手常見混淆：** 每個 topic 的 5 筆訊息仍留在 Kafka。稍後三個新 consumer group 都會由各自 topic 的開頭讀取；`orders-audit-1` 和 `orders-audit-2` 是不同 group，因此兩者都會各自收到 `orders-audit` 的全部訊息。
 
-### 29. 開兩個 terminal 啟動 Python consumer 和 producer
+### 29. 開四個 terminal 啟動三個 consumer group 和 producer
 
-在 VS Code 選 **Terminal → New Terminal** 兩次，建立兩個 PowerShell terminal。每個新 terminal 都輸入以下指令確認位置，並同步 uv 環境：
+在 VS Code 選 **Terminal → New Terminal** 四次，建立四個 PowerShell terminal。每個新 terminal 都輸入以下指令確認位置，並同步 uv 環境：
 
 ```powershell
 Get-Location
 uv sync
 ```
 
-確保兩個 terminal 都位於 project folder。`uv run` 會自動使用 `.venv`，毋須手動啟動虛擬環境。
+確保四個 terminal 都位於 project folder。`uv run` 會自動使用 `.venv`，毋須手動啟動虛擬環境。
 
-**Terminal A：先啟動 consumer**
+**Terminal A：啟動消費 `orders` 的 group**
 
 ```powershell
-uv run python -m demo_real_time_kafka.consumer
+uv run python -m demo_real_time_kafka.consumer --topic orders --group-id orders-to-postgres
 ```
 
 預期看到：
 
 ```text
-Subscribed to topic 'orders'; press Ctrl+C to stop
+Group 'orders-to-postgres' subscribed to topic 'orders'; press Ctrl+C to stop
 ```
 
-之後它會讀入之前 5 筆訊息、寫入 PostgreSQL，並顯示 `Saved order_id=...` 和 `offset committed`。保持 Terminal A 開啟。
+**Terminal B、C：分別啟動兩個消費 `orders-audit` 的 group**
 
-**Terminal B：發送另外 10 筆**
+Terminal B：
+
+```powershell
+uv run python -m demo_real_time_kafka.consumer --topic orders-audit --group-id orders-audit-1
+```
+
+Terminal C：
+
+```powershell
+uv run python -m demo_real_time_kafka.consumer --topic orders-audit --group-id orders-audit-2
+```
+
+三個 terminal 都應顯示各自的 group ID 和 topic，並讀入前面已發送的 5 筆訊息。保持三個 consumer 開啟。
+
+**Terminal D：發送另外 10 筆**
 
 ```powershell
 uv run python -m demo_real_time_kafka.producer --count 10 --interval 0
 ```
 
-預期 producer 報告 10 筆成功；Terminal A 陸續顯示 10 筆訊息已處理。第二批的 `order-000001` 至 `order-000005` 與第一批重複，會被當成 duplicate；只有 `order-000006` 至 `order-000010` 是新 row。因此兩批合計有 **10 個不同訂單**，不是 15 個。
+producer 會把每筆訂單分別發到兩個 topic。`orders-to-postgres` 只消費 `orders`；另外兩個 group 都獨立消費 `orders-audit`。第二批的 `order-000001` 至 `order-000005` 與第一批重複，會被當成 duplicate；只有 `order-000006` 至 `order-000010` 是新 row。因此三個 group 處理後，資料庫合計有 **10 個不同訂單**，不是 15 個或 30 個。
 
-**先開 consumer 的原因：** 一般教學以 consumer 先訂閱、producer 再開始發訊息較容易觀察即時流動。即使 consumer 未啟動時 Kafka 仍會保存訊息，但新 consumer group 的起始位置受 offset 設定影響。
+**先開 consumer 的原因：** 一般教學以 consumer 先訂閱、producer 再開始發訊息較容易觀察即時流動。即使 consumer 未啟動時 Kafka 仍會保存訊息，但每個新 consumer group 的起始位置受 offset 設定影響。
 
 ### 30. 用 SQL 查詢 PostgreSQL
 
-開第三個 terminal（或先停止 Terminal B 的命令後使用），在 project folder 輸入：
+開另一個 terminal（或等 Terminal D 的 producer 完成後使用），在 project folder 輸入：
 
 ```powershell
 docker compose exec db psql -U de_user -d orders -c "SELECT COUNT(*) FROM orders;"
 ```
 
-若剛才依次發送第一批 5 筆及第二批 10 筆，預期 count 為 `10`：第二批重用了前 5 個 ID，只有後 5 個是新訂單。
+若剛才依次發送第一批 5 筆及第二批 10 筆，預期 count 為 `10`：第二批重用了前 5 個 ID，只有後 5 個是新訂單。三個 group 即使各自處理同一批訂單，資料庫 primary key 仍會阻止重複 row。
 
 查看訂單摘要：
 
@@ -1145,7 +1233,7 @@ docker compose exec db psql -U de_user -d orders -c "SELECT order_id, items FROM
 
 ### 31. 示範重複事件與冪等寫入
 
-保持 Terminal A 的 consumer 開啟，再於另一個 terminal 重跑同一個 producer command：
+保持三個 consumer terminal 開啟，再於另一個 terminal 重跑同一個 producer command：
 
 ```powershell
 uv run python -m demo_real_time_kafka.producer --count 10 --interval 0
@@ -1161,30 +1249,32 @@ docker compose exec db psql -U de_user -d orders -c "SELECT COUNT(*) FROM orders
 
 行數應保持不變。這是因為 PostgreSQL 的 primary key 和 `ON CONFLICT DO NOTHING` 阻止相同 `order_id` 重複插入。重播事件的 event_time 會更新，但資料庫不會用它覆蓋已保存的 row。
 
-### 32. 示範 consumer group offset 會延續
+### 32. 示範三個 consumer group 各自延續 offset
 
 1. 在 Terminal A 按 `Ctrl+C`。
 2. 等候看到 `Consumer closed`。
-3. 再次執行：
+3. 在 Terminal A 再次執行原本的命令：
 
    ```powershell
-   uv run python -m demo_real_time_kafka.consumer
+   uv run python -m demo_real_time_kafka.consumer --topic orders --group-id orders-to-postgres
    ```
 
-4. 因 `orders-to-postgres` group 已有 committed offset，consumer 應由上次成功位置之後開始，而不是每次都從 topic 開頭重播全部資料。
+4. 因 `orders-to-postgres` group 已有 committed offset，consumer 應由上次成功位置之後開始，而不是每次都從 `orders` 開頭重播全部資料。Terminal B、C 的 group 各有自己的 `orders-audit` offset。
 5. 再用 SQL 查 `COUNT(*)`；已經保存的資料不會因為重啟 consumer 而增加。
 
 每個 consumer group 有自己的 offset。刪除 volume、改 group ID 或刪 topic 都會改變這個練習的狀態，不要用它們來「隨便重置」而不先理解後果。
 
 ### 33. 查 Kafka group 及服務 logs
 
-檢查 group 狀態：
+分別檢查三個 group 狀態：
 
 ```powershell
 docker compose exec kafka /opt/kafka/bin/kafka-consumer-groups.sh --bootstrap-server localhost:9092 --describe --group orders-to-postgres
+docker compose exec kafka /opt/kafka/bin/kafka-consumer-groups.sh --bootstrap-server localhost:9092 --describe --group orders-audit-1
+docker compose exec kafka /opt/kafka/bin/kafka-consumer-groups.sh --bootstrap-server localhost:9092 --describe --group orders-audit-2
 ```
 
-預期表格會列出 topic、partition、CURRENT-OFFSET、LOG-END-OFFSET 及 LAG。consumer 正在執行時可能見到 partition assignment；停止 consumer 時可能暫時顯示 group 沒有 active member。
+預期每個 group 表格會列出其 topic 的兩個 partition、CURRENT-OFFSET、LOG-END-OFFSET 及 LAG。consumer 正在執行時可能見到 partition assignment；停止 consumer 時可能暫時顯示 group 沒有 active member。兩個 `orders-audit` group 各自接收 topic 全部資料；不同 group 之間不會分攤訊息。
 
 查看最近的 container logs：
 
@@ -1204,7 +1294,7 @@ Python consumer 的 logs 在 Terminal A；producer 的 delivery logs 在執行 p
 - **Port already allocated：** 可能有本機程式已使用 `5432` 或 `9092`。先找出並正常停止佔用程式；不要未理解就更改 Compose port，因為 Python `.env` 也要一起對應。
 - **`docker compose config` 顯示 `${...}`/設定錯誤：** 確認已在 project folder、`.env` 存在且檔名沒有變成 `.env.txt`。
 - **`uv run` 找不到套件或 Python：** 確認 terminal 在 project folder，`pyproject.toml` 和 `uv.lock` 存在，再執行 `uv sync`。用 `uv run python --version` 確認版本；不要改用系統 Python 或手動啟動 `.venv`。
-- **Topic 已存在：** `--create-if-not-exists` 是安全的；再執行 `--describe` 確認 partition 數。
+- **Topic 已存在但只有 1 個 partition：** `--create-if-not-exists` 不會修改現有 topic；使用 `kafka-topics.sh --alter --topic <topic> --partitions 2`，再用 `--describe` 確認。partition 數只可增加，不可減少。
 
 在這個簡化流程中，無效訊息會阻塞該 partition；後續延伸可新增 DLQ topic，但要先設計好「成功寫入 DLQ 後才提交原 topic offset」。
 
@@ -1273,27 +1363,28 @@ git commit -m "feat: build local kafka orders pipeline"
 
 ## 完成檢查表
 
-- [ ] `uv --version` 顯示 uv 已安裝，`uv run python --version` 顯示 Python 3.14 或以上。
-- [ ] `git --version`、`docker --version`、`docker compose version` 成功。
-- [ ] `docker info` 能顯示 Server。
-- [ ] VS Code 使用專案 `.venv` interpreter。
-- [ ] `.env` 存在，`.gitignore` 排除 `.env` 和 `.venv`。
-- [ ] `docker compose ps` 顯示 Kafka `Up`、PostgreSQL `healthy`。
-- [ ] Kafka topic `orders` 存在，1 partition。
-- [ ] `tests/test_event.py` unit tests 通過。
-- [ ] `tests/test_db.py` integration test 通過。
-- [ ] Producer 能把有效 JSON 訂單送入 Kafka。
-- [ ] Consumer 能讀取訊息、驗證並寫入 PostgreSQL。
-- [ ] PostgreSQL SQL 查詢結果與訂單數量吻合。
-- [ ] 重播相同 `order_id` 不會增加資料列。
-- [ ] 重啟相同 consumer group 後會延續已提交的 offset。
-- [ ] 明白 `docker compose down` 保留 volumes，而 `docker compose down -v` 會刪除資料。
+- [x] `uv --version` 顯示 uv 已安裝，`uv run python --version` 顯示 Python 3.14 或以上。
+- [x] `git --version`、`docker --version`、`docker compose version` 成功。
+- [x] `docker info` 能顯示 Server。
+- [x] VS Code 使用專案 `.venv` interpreter。
+- [x] `.env` 存在，`.gitignore` 排除 `.env` 和 `.venv`。
+- [x] `docker compose ps` 顯示 Kafka `Up`、PostgreSQL `healthy`。
+- [x] Kafka topics `orders` 和 `orders-audit` 都存在，各有 2 partitions。
+- [x] 三個 consumer groups 按設定分別消費 `orders` 或 `orders-audit`。
+- [x] `tests/test_event.py` 和 `tests/test_producer.py` unit tests 通過。
+- [x] `tests/test_db.py` integration test 通過。
+- [x] Producer 能把有效 JSON 訂單送入 Kafka。
+- [x] Consumer 能讀取訊息、驗證並寫入 PostgreSQL。
+- [x] PostgreSQL SQL 查詢結果與訂單數量吻合。
+- [x] 重播相同 `order_id` 不會增加資料列。
+- [x] 重啟相同 consumer group 後會延續已提交的 offset。
+- [x] 明白 `docker compose down` 保留 volumes，而 `docker compose down -v` 會刪除資料。
 
 ## 建議下一步延伸
 
 完成並理解以上流程後，才考慮：
 
-1. 增加 topic partitions，並用兩個同 group consumer 觀察 partition assignment。
+1. 在同一個 consumer group 啟動多個 consumer，觀察兩個 partitions 如何分配；當 group member 多於 partitions 時，會有 consumer 暫時沒有 partition。
 2. 加入 dead-letter topic，並規定訊息寫入 DLQ 成功後才提交原 topic offset。
 3. 將 Python producer/consumer 放進 Docker Compose，練習 Compose service DNS/networking。
 4. 加事件 schema version、更完整的 items 欄位驗證及測試。
