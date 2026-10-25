@@ -1,0 +1,787 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="description" content="Kafka 多 Broker 訂單管道與 DLQ 架構圖">
+  <title>Kafka 多 Broker 訂單管道架構圖</title>
+  <style>
+    :root {
+      color-scheme: light;
+      --ink: #17263a;
+      --muted: #61748b;
+      --line: #d9e3ee;
+      --paper: #fff;
+      --canvas: #f2f6fa;
+      --blue: #3578c6;
+      --blue-pale: #eaf2fc;
+      --teal: #247c91;
+      --teal-pale: #e7f4f6;
+      --green: #25845f;
+      --green-pale: #eaf6ef;
+      --orange: #b75c20;
+      --orange-pale: #fff3e8;
+      --navy: #19273d;
+      --navy-card: #243750;
+      font-family: "Microsoft JhengHei", "Noto Sans CJK TC", "PingFang TC", sans-serif;
+      font-size: 16px;
+      line-height: 1.55;
+      background: var(--canvas);
+      color: var(--ink);
+    }
+
+    * { box-sizing: border-box; }
+
+    body { margin: 0; min-width: 320px; }
+
+    main {
+      width: min(1440px, calc(100% - 48px));
+      margin: 0 auto;
+      padding: 40px 0 56px;
+    }
+
+    header { margin-bottom: 30px; }
+
+    h1 {
+      margin: 0;
+      font-size: clamp(2rem, 4vw, 2.8rem);
+      line-height: 1.2;
+      letter-spacing: -.035em;
+    }
+
+    .intro {
+      margin: 12px 0 0;
+      color: var(--muted);
+      font-size: 1.08rem;
+    }
+
+    h2 {
+      margin: 0 0 16px;
+      font-size: 1.15rem;
+      line-height: 1.3;
+    }
+
+    h3 { margin: 0; font-size: 1.02rem; }
+    p { margin: 0; }
+
+    .eyebrow {
+      margin: 0 0 7px;
+      color: #71849a;
+      font-size: .77rem;
+      font-weight: 800;
+      letter-spacing: .12em;
+      text-transform: uppercase;
+    }
+
+    .overview {
+      display: grid;
+      grid-template-columns: minmax(190px, .78fr) 34px minmax(430px, 1.65fr) 34px minmax(250px, 1fr);
+      align-items: start;
+      gap: 12px;
+    }
+
+    .card {
+      border: 1px solid var(--line);
+      border-radius: 16px;
+      background: var(--paper);
+      box-shadow: 0 8px 28px rgb(28 50 76 / 5%);
+    }
+
+    .producer, .consumers { padding: 22px; }
+    .producer { border-top: 4px solid var(--blue); }
+    .consumers { border-top: 4px solid #6886a8; }
+
+    .producer p, .consumer p, .database p, .note p {
+      color: var(--muted);
+      font-size: .91rem;
+    }
+
+    .producer .lead { margin: 9px 0 17px; color: var(--ink); }
+
+    .topic-tags, .config-tags, .chips {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+    }
+
+    .tag, .chip {
+      display: inline-flex;
+      align-items: center;
+      border-radius: 999px;
+      padding: 5px 10px;
+      font-size: .79rem;
+      font-weight: 700;
+    }
+
+    .tag { background: var(--blue-pale); color: #2c65a5; }
+    .config-tags { margin-top: 17px; }
+    .config-tags .tag { background: #f0f4f8; color: #52667e; }
+
+    .flow-arrow {
+      align-self: center;
+      color: #91a2b6;
+      font-size: 2rem;
+      font-weight: 400;
+      text-align: center;
+    }
+
+    .cluster {
+      padding: 23px;
+      border-radius: 18px;
+      background: var(--navy);
+      color: #f2f6fb;
+      box-shadow: 0 12px 36px rgb(21 39 64 / 15%);
+    }
+
+    .cluster .eyebrow { color: #a8bad0; }
+    .cluster-head {
+      display: flex;
+      align-items: flex-start;
+      justify-content: space-between;
+      gap: 18px;
+      margin-bottom: 18px;
+    }
+
+    .cluster-head h2 { margin: 0 0 4px; font-size: 1.35rem; }
+    .cluster-head p { color: #b8c7d8; font-size: .88rem; }
+
+    .cluster .chip { flex: 0 0 auto; background: #344a65; color: #e1ebf5; }
+
+    .brokers, .topic-grid, .controllers, .groups, .processing-grid {
+      display: grid;
+      gap: 12px;
+    }
+
+    .brokers { grid-template-columns: repeat(2, minmax(0, 1fr)); margin-bottom: 20px; }
+
+    .broker {
+      padding: 13px 15px;
+      border: 1px solid #425b79;
+      border-radius: 12px;
+      background: var(--navy-card);
+    }
+
+    .broker h3 { display: flex; align-items: center; gap: 9px; font-size: .98rem; }
+    .broker p { margin-top: 4px; padding-left: 20px; color: #b5c5d7; font-size: .82rem; }
+    .status-dot { width: 9px; height: 9px; flex: 0 0 auto; border-radius: 50%; background: #5cc49a; }
+
+    .topic-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+
+    .topic {
+      min-width: 0;
+      padding: 14px;
+      border: 1px solid #486075;
+      border-radius: 12px;
+      background: #20364a;
+    }
+
+    .topic.orders { border-top: 3px solid #58b5c8; }
+    .topic.audit { border-top: 3px solid #60bdad; }
+    .topic.dlq { border-top: 3px solid #e39a5d; }
+    .topic h3 { margin-bottom: 4px; font-size: .96rem; overflow-wrap: anywhere; }
+    .topic > p { min-height: 2.4em; color: #c1cede; font-size: .78rem; }
+
+    .partition {
+      margin-top: 9px;
+      padding: 9px 10px;
+      border-radius: 8px;
+      background: #2b4258;
+      color: #eef4fa;
+      font-size: .78rem;
+      font-weight: 700;
+    }
+
+    .partition small {
+      display: block;
+      margin-top: 2px;
+      color: #c0cedc;
+      font-size: .72rem;
+      font-weight: 400;
+      line-height: 1.4;
+    }
+
+    .quorum {
+      margin-top: 18px;
+      padding: 14px;
+      border: 1px solid #425873;
+      border-radius: 12px;
+      background: #1e3048;
+    }
+
+    .quorum-heading {
+      display: flex;
+      align-items: baseline;
+      justify-content: space-between;
+      gap: 12px;
+      margin-bottom: 10px;
+    }
+
+    .quorum-heading strong { font-size: .96rem; }
+    .quorum-heading span { color: #b7c6d8; font-size: .78rem; }
+    .controllers { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+    .controller {
+      padding: 8px;
+      border-radius: 8px;
+      background: #344b67;
+      color: #edf3f9;
+      font-size: .78rem;
+      text-align: center;
+    }
+
+    .groups { gap: 10px; }
+    .consumer {
+      padding: 13px 14px;
+      border: 1px solid var(--line);
+      border-left: 4px solid #6388b4;
+      border-radius: 11px;
+      background: #fff;
+    }
+
+    .consumer h3 { margin-bottom: 3px; font-size: .9rem; overflow-wrap: anywhere; }
+    .consumer p { font-size: .8rem; }
+
+    .process-section { margin-top: 26px; }
+    .process-section > .eyebrow { margin-bottom: 6px; }
+    .process-section > h2 { margin-bottom: 15px; }
+
+    .processing-grid { grid-template-columns: 1fr 1fr; }
+
+    .database, .dlq-path {
+      min-height: 172px;
+      padding: 22px;
+    }
+
+    .database { border-top: 4px solid #5db584; }
+    .dlq-path { border-top: 4px solid #e39858; }
+    .process-title { display: flex; align-items: center; gap: 10px; margin-bottom: 8px; }
+    .process-icon {
+      display: grid;
+      width: 34px;
+      height: 34px;
+      place-items: center;
+      flex: 0 0 auto;
+      border-radius: 10px;
+      background: var(--green-pale);
+      color: var(--green);
+      font-size: 1.08rem;
+      font-weight: 800;
+    }
+
+    .dlq-path .process-icon { background: var(--orange-pale); color: var(--orange); }
+    .database p, .dlq-path p { margin-top: 6px; }
+
+    .sequence {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      gap: 7px;
+      margin-top: 16px;
+      color: #435b73;
+      font-size: .83rem;
+      font-weight: 700;
+    }
+
+    .sequence span:not(.sequence-arrow) {
+      padding: 6px 9px;
+      border-radius: 8px;
+      background: #f0f5f8;
+    }
+
+    .sequence-arrow { color: #8ca0b5; }
+    .dlq-path .sequence span:not(.sequence-arrow) { background: #fff5eb; }
+
+    .notes {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 14px;
+      margin-top: 20px;
+    }
+
+    .note { padding: 17px 19px; }
+    .note h3 { margin-bottom: 5px; font-size: .94rem; }
+    .note p { font-size: .82rem; }
+    .note.warning { border-color: #f0d5bd; background: #fffaf5; }
+    .note.warning h3 { color: #a95720; }
+    footer { margin-top: 22px; color: #8393a7; font-size: .76rem; }
+
+    .layers { display: grid; gap: 12px; }
+    .layer-arrow { color: #8da0b5; font-size: 1.5rem; line-height: 1; text-align: center; }
+    .producer-stage, .consumer-stage { padding: 20px 22px; }
+    .producer-stage { border-left: 4px solid var(--blue); }
+    .producer-layout {
+      display: grid;
+      grid-template-columns: minmax(180px, .8fr) minmax(250px, 1fr) minmax(240px, 1.15fr);
+      align-items: center;
+      gap: 22px;
+    }
+    .producer-layout h2, .consumer-stage h2 { margin: 0 0 5px; }
+    .producer-layout p, .consumer-stage > p { color: var(--muted); font-size: .9rem; }
+    .producer-layout .config-tags { margin: 0; }
+    .producer-layout .endpoint {
+      padding: 12px 15px;
+      border-radius: 10px;
+      background: #f2f6fa;
+      color: #435b73;
+      font-size: .83rem;
+    }
+    .producer-layout .endpoint strong { display: block; color: var(--ink); }
+    .network {
+      padding: 23px;
+      border: 2px solid #263b56;
+      border-radius: 18px;
+      background: var(--navy);
+      color: #f2f6fb;
+      box-shadow: 0 12px 36px rgb(21 39 64 / 13%);
+    }
+    .network > .cluster-head { margin-bottom: 18px; }
+    .network .cluster-head .eyebrow { color: #a8bad0; }
+    .network .cluster-head h2 { margin: 0 0 4px; font-size: 1.35rem; }
+    .network .cluster-head p { color: #b8c7d8; font-size: .88rem; }
+    .network .chip { background: #344a65; color: #e1ebf5; }
+    .broker-grid {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 16px;
+    }
+    .broker-column {
+      min-width: 0;
+      padding: 17px;
+      border: 1px solid #49627f;
+      border-radius: 14px;
+      background: #20324a;
+    }
+    .broker-heading {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 10px;
+      margin-bottom: 13px;
+      padding-bottom: 11px;
+      border-bottom: 1px solid #405671;
+    }
+    .broker-heading h3 { display: flex; align-items: center; gap: 9px; font-size: 1.02rem; }
+    .broker-heading span:last-child { color: #b8c8d9; font-size: .78rem; }
+    .replica-list { display: grid; gap: 9px; }
+    .replica {
+      padding: 10px 11px;
+      border-left: 3px solid #7790aa;
+      border-radius: 8px;
+      background: #2b425a;
+    }
+    .replica.leader { border-left-color: #59c59b; }
+    .replica.follower { border-left-color: #90a4bb; }
+    .replica-name { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+    .replica-name strong { font-size: .84rem; overflow-wrap: anywhere; }
+    .role {
+      flex: 0 0 auto;
+      padding: 2px 7px;
+      border-radius: 999px;
+      background: #3c566f;
+      color: #dce7f2;
+      font-size: .7rem;
+      font-weight: 750;
+    }
+    .leader .role { background: #245a4b; color: #d8f7e8; }
+    .replica-partitions { margin-top: 5px; color: #c3d1df; font-size: .76rem; line-height: 1.45; }
+    .replica-partitions span { display: inline-block; margin-right: 8px; }
+    .broker-note { margin-top: 11px; color: #adbed0; font-size: .75rem; }
+    .network-foot {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) minmax(280px, .85fr);
+      gap: 14px;
+      margin-top: 16px;
+    }
+    .quorum, .replication-note {
+      min-width: 0;
+      padding: 14px;
+      border: 1px solid #425873;
+      border-radius: 12px;
+      background: #1e3048;
+    }
+    .quorum-heading { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; margin-bottom: 10px; }
+    .quorum-heading strong { font-size: .92rem; }
+    .quorum-heading span, .replication-note p { color: #b7c6d8; font-size: .76rem; }
+    .controllers { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; }
+    .controller { padding: 8px 5px; border-radius: 8px; background: #344b67; color: #edf3f9; font-size: .74rem; text-align: center; }
+    .replication-note strong { display: block; margin-bottom: 5px; font-size: .9rem; }
+    .consumer-stage { padding: 20px 22px; border-left: 4px solid #6886a8; }
+    .consumer-stage > p { margin-bottom: 16px; color: var(--muted); font-size: .9rem; }
+    .consumer-routes { display: grid; gap: 12px; }
+    .group-flow {
+      display: grid;
+      grid-template-columns: minmax(145px, .72fr) 28px minmax(185px, .88fr) 28px minmax(0, 2.2fr);
+      align-items: center;
+      gap: 10px;
+      padding: 13px;
+      border: 1px solid var(--line);
+      border-radius: 12px;
+      background: #fbfcfe;
+    }
+    .source-topic {
+      padding: 12px;
+      border: 1px solid #c9d8e8;
+      border-radius: 10px;
+      background: #eef4fa;
+      text-align: center;
+    }
+    .source-topic.audit-source { border-color: #c5dfdc; background: #edf7f5; }
+    .source-topic strong { display: block; font-size: .9rem; overflow-wrap: anywhere; }
+    .source-topic span { display: block; margin-top: 3px; color: var(--muted); font-size: .73rem; }
+    .subscribe-arrow, .route-arrow {
+      color: #6f849b;
+      font-size: 1.45rem;
+      font-weight: 700;
+      line-height: 1;
+      text-align: center;
+    }
+    .group-box {
+      min-width: 0;
+      padding: 13px;
+      border: 2px solid #d5e0eb;
+      border-radius: 11px;
+      background: #fff;
+    }
+    .group-box.audit-group { border-color: #bdd7d3; }
+    .group-box h3 { margin-bottom: 4px; font-size: .91rem; overflow-wrap: anywhere; }
+    .group-box p { color: var(--muted); font-size: .76rem; }
+    .outcomes { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
+    .outcome { min-width: 0; padding: 11px 12px; border-radius: 9px; }
+    .outcome h4 { margin: 0 0 4px; font-size: .82rem; }
+    .outcome p { color: #536982; font-size: .74rem; line-height: 1.45; overflow-wrap: anywhere; }
+    .outcome.valid { background: var(--green-pale); }
+    .outcome.valid h4 { color: #206b4c; }
+    .outcome.invalid { background: var(--orange-pale); }
+    .outcome.invalid h4 { color: var(--orange); }
+    .flow-step { margin-top: 6px; color: #455d75; font-size: .74rem; font-weight: 750; }
+    .outcome-dest { display: inline-block; margin-top: 3px; color: #284b3c; font-weight: 800; }
+    .outcome.invalid .outcome-dest { color: #9f501a; }
+    .scenario-section, .dlq-detail {
+      margin-top: 18px;
+      padding: 18px;
+      border: 1px solid var(--line);
+      border-radius: 13px;
+      background: #f6f9fc;
+    }
+    .scenario-section > h3, .dlq-detail > h3 { margin-bottom: 5px; font-size: 1rem; }
+    .section-intro { margin-bottom: 13px; color: var(--muted); font-size: .83rem; }
+    .scenario-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
+    .scenario-card {
+      padding: 14px;
+      border: 1px solid var(--line);
+      border-radius: 10px;
+      background: #fff;
+    }
+    .scenario-card.success { border-left: 4px solid #5db584; }
+    .scenario-card.failure { border-left: 4px solid #d98246; }
+    .scenario-card h4 { margin: 0 0 5px; font-size: .9rem; }
+    .scenario-card p { color: #536982; font-size: .8rem; }
+    .result {
+      display: inline-block;
+      margin-top: 8px;
+      padding: 4px 8px;
+      border-radius: 7px;
+      background: var(--green-pale);
+      color: #206b4c;
+      font-size: .77rem;
+      font-weight: 800;
+    }
+    .failure .result { background: var(--orange-pale); color: #9f501a; }
+    .dlq-detail { border-color: #f0d5bd; background: #fffaf5; }
+    .dlq-detail > h3 { color: #a95720; }
+    .dlq-grid { display: grid; grid-template-columns: minmax(0, .9fr) 28px minmax(0, 1.25fr) 28px minmax(0, 1fr); align-items: center; gap: 10px; }
+    .dlq-node { padding: 12px; border: 1px solid #efd2b8; border-radius: 9px; background: #fff; }
+    .dlq-node strong { display: block; margin-bottom: 3px; font-size: .83rem; }
+    .dlq-node p { color: #735d4e; font-size: .75rem; }
+    .dlq-arrow { color: #ba7137; font-size: 1.35rem; font-weight: 800; text-align: center; }
+    .group-offsets { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 7px; }
+    .group-offsets span { padding: 3px 7px; border-radius: 999px; background: #fff0e1; color: #875025; font-size: .7rem; font-weight: 700; }
+    .dlq-note { margin-top: 10px; color: #735d4e; font-size: .76rem; }
+
+    @media (max-width: 1100px) {
+      main { width: min(960px, calc(100% - 36px)); }
+      .broker-grid { gap: 10px; }
+      .network { padding: 18px; }
+      .broker-column { padding: 13px; }
+      .network-foot { grid-template-columns: 1fr; }
+      .group-flow { grid-template-columns: minmax(120px, .65fr) 22px minmax(160px, .8fr) 22px minmax(0, 2fr); gap: 7px; padding: 10px; }
+      .outcome { padding: 9px; }
+      .dlq-grid { grid-template-columns: minmax(0, .9fr) 22px minmax(0, 1.25fr) 22px minmax(0, 1fr); gap: 7px; }
+    }
+
+    @media (max-width: 760px) {
+      main { width: min(560px, calc(100% - 28px)); padding-top: 28px; }
+      header { margin-bottom: 23px; }
+      .producer-layout, .broker-grid, .network-foot, .group-flow, .outcomes, .notes, .scenario-grid, .dlq-grid { grid-template-columns: 1fr; }
+      .network { padding: 15px; }
+      .network .cluster-head { display: block; }
+      .network .cluster-head .chip { display: inline-flex; margin-top: 11px; }
+      .broker-heading { align-items: flex-start; }
+      .quorum-heading { display: block; }
+      .quorum-heading span { display: block; margin-top: 3px; }
+      .controllers { grid-template-columns: 1fr; }
+      .group-flow { gap: 8px; }
+      .subscribe-arrow, .route-arrow { transform: rotate(90deg); }
+      .dlq-arrow { transform: rotate(90deg); }
+      .producer-stage, .consumer-stage { padding: 17px; }
+    }
+
+    @media print {
+      :root { background: #fff; }
+      main { width: 100%; padding: 0; }
+      .card, .network { box-shadow: none; break-inside: avoid; }
+      .group-flow { break-inside: avoid; }
+    }
+  </style>
+</head>
+<body>
+  <main>
+    <header>
+      <p class="eyebrow">Kafka · Order pipeline</p>
+      <h1>多 Broker 訂單管道</h1>
+      <p class="intro">Python Producer → Kafka topics → Consumer groups → PostgreSQL；無效訊息會送往 DLQ。</p>
+    </header>
+
+    <div class="layers" aria-label="Kafka 訂單管道分層架構">
+      <section class="card producer-stage" aria-label="Producer layer">
+        <p class="eyebrow">Layer 1 · Event producer</p>
+        <div class="producer-layout">
+          <div>
+            <h2>Python Producer</h2>
+            <p>產生 JSON 訂單，同一訂單各發一份到兩個 topic。</p>
+          </div>
+          <div>
+            <p class="eyebrow">發布到</p>
+            <div class="topic-tags">
+              <span class="tag">orders</span>
+              <span class="tag">orders-audit</span>
+            </div>
+            <div class="config-tags">
+              <span class="tag">acks=all</span>
+              <span class="tag">idempotence</span>
+            </div>
+          </div>
+          <p class="endpoint">Bootstrap servers<strong>localhost:9092 · localhost:9094</strong></p>
+        </div>
+      </section>
+
+      <div class="layer-arrow" aria-hidden="true">↓</div>
+
+      <section class="network" aria-label="Docker network Kafka cluster">
+        <div class="cluster-head">
+          <div>
+            <p class="eyebrow">Layer 2 · Docker network</p>
+            <h2>Apache Kafka 4.0.0 cluster</h2>
+            <p>Broker 內展示各 topic partition 副本及其角色；每個 partition 的兩份副本分佈於兩個 brokers。</p>
+          </div>
+          <span class="chip">2 replicas · min ISR=2</span>
+        </div>
+
+        <div class="broker-grid" aria-label="各 Kafka broker 持有的 topic partitions">
+          <article class="broker-column">
+            <div class="broker-heading">
+              <h3><span class="status-dot"></span>Broker 1 · node 1</h3>
+              <span>External :9092</span>
+            </div>
+            <div class="replica-list">
+              <section class="replica follower">
+                <div class="replica-name"><strong>orders</strong><span class="role">Follower</span></div>
+                <p class="replica-partitions"><span>P0 · Follower</span><span>P1 · Follower</span></p>
+              </section>
+              <section class="replica">
+                <div class="replica-name"><strong>orders-audit</strong><span class="role">Leader / Follower</span></div>
+                <p class="replica-partitions"><span>P0 · Leader</span><span>P1 · Follower</span></p>
+              </section>
+              <section class="replica">
+                <div class="replica-name"><strong>orders-dlq</strong><span class="role">Leader / Follower</span></div>
+                <p class="replica-partitions"><span>P0 · Leader</span><span>P1 · Follower</span></p>
+              </section>
+            </div>
+            <p class="broker-note">Partition 角色順序：P0 / P1</p>
+          </article>
+
+          <article class="broker-column">
+            <div class="broker-heading">
+              <h3><span class="status-dot"></span>Broker 2 · node 2</h3>
+              <span>External :9094</span>
+            </div>
+            <div class="replica-list">
+              <section class="replica leader">
+                <div class="replica-name"><strong>orders</strong><span class="role">Leader</span></div>
+                <p class="replica-partitions"><span>P0 · Leader</span><span>P1 · Leader</span></p>
+              </section>
+              <section class="replica leader">
+                <div class="replica-name"><strong>orders-audit</strong><span class="role">Follower / Leader</span></div>
+                <p class="replica-partitions"><span>P0 · Follower</span><span>P1 · Leader</span></p>
+              </section>
+              <section class="replica leader">
+                <div class="replica-name"><strong>orders-dlq</strong><span class="role">Follower / Leader</span></div>
+                <p class="replica-partitions"><span>P0 · Follower</span><span>P1 · Leader</span></p>
+              </section>
+            </div>
+            <p class="broker-note">Partition 角色順序：P0 / P1</p>
+          </article>
+        </div>
+
+        <div class="network-foot">
+          <section class="quorum" aria-label="KRaft metadata quorum">
+            <div class="quorum-heading">
+              <strong>KRaft metadata quorum</strong>
+              <span>獨立於兩個 broker</span>
+            </div>
+            <div class="controllers">
+              <div class="controller">Controller 1 · node 3</div>
+              <div class="controller">Controller 2 · node 4</div>
+              <div class="controller">Controller 3 · node 5</div>
+            </div>
+          </section>
+          <aside class="replication-note">
+            <strong>Leader / Follower 說明</strong>
+            <p>每個 partition 有一個 leader 處理讀寫，另一個 broker 持有 follower replica。orders 兩個 leader 都在 Broker 2；audit、DLQ 的 leader 分散於兩個 broker。</p>
+          </aside>
+        </div>
+      </section>
+
+      <div class="layer-arrow" aria-hidden="true">↓</div>
+
+      <section class="card consumer-stage" aria-label="Topic subscription and consumer group message processing">
+        <p class="eyebrow">Layer 3 · Topic → Consumer group → Processing</p>
+        <h2>每條箭咀標明 topic 同接收嘅 consumer group</h2>
+        <p><strong>orders-audit-1</strong> 同 <strong>orders-audit-2</strong> 係兩個獨立 consumer groups，唔係同一個 group；兩者各自讀取完整 audit topic。</p>
+        <div class="consumer-routes">
+          <article class="group-flow">
+            <div class="source-topic">
+              <strong>orders</strong>
+              <span>Kafka topic</span>
+            </div>
+            <div class="subscribe-arrow" aria-label="feeds">→</div>
+            <div class="group-box">
+              <h3>orders-to-postgres</h3>
+              <p>Consumer group · 消費 orders</p>
+            </div>
+            <div class="route-arrow" aria-hidden="true">→</div>
+            <div class="outcomes">
+              <div class="outcome valid">
+                <h4>✓ 有效訊息</h4>
+                <p>驗證後寫入或確認訂單已存在：<span class="outcome-dest">PostgreSQL · orders</span></p>
+                <div class="flow-step">成功後同步提交 offset</div>
+              </div>
+              <div class="outcome invalid">
+                <h4>! 無效訊息</h4>
+                <p>發送含來源位置、group、錯誤原因和原始 bytes 的 envelope：<span class="outcome-dest">orders-dlq</span></p>
+                <div class="flow-step">DLQ delivery 確認後提交來源 offset</div>
+              </div>
+            </div>
+          </article>
+
+          <article class="group-flow">
+            <div class="source-topic audit-source">
+              <strong>orders-audit</strong>
+              <span>Kafka topic</span>
+            </div>
+            <div class="subscribe-arrow" aria-label="feeds">→</div>
+            <div class="group-box audit-group">
+              <h3>orders-audit-1</h3>
+              <p>獨立 Consumer group</p>
+            </div>
+            <div class="route-arrow" aria-hidden="true">→</div>
+            <div class="outcomes">
+              <div class="outcome valid">
+                <h4>✓ 有效訊息</h4>
+                <p>驗證後寫入或確認訂單已存在：<span class="outcome-dest">PostgreSQL · orders</span></p>
+                <div class="flow-step">成功後提交此 group 的 offset</div>
+              </div>
+              <div class="outcome invalid">
+                <h4>! 無效訊息</h4>
+                <p>送到共用 DLQ，envelope 標記此 group：<span class="outcome-dest">orders-dlq</span></p>
+                <div class="flow-step">確認 DLQ 後提交此 group 的來源 offset</div>
+              </div>
+            </div>
+          </article>
+
+          <article class="group-flow">
+            <div class="source-topic audit-source">
+              <strong>orders-audit</strong>
+              <span>Kafka topic</span>
+            </div>
+            <div class="subscribe-arrow" aria-label="feeds">→</div>
+            <div class="group-box audit-group">
+              <h3>orders-audit-2</h3>
+              <p>獨立 Consumer group</p>
+            </div>
+            <div class="route-arrow" aria-hidden="true">→</div>
+            <div class="outcomes">
+              <div class="outcome valid">
+                <h4>✓ 有效訊息</h4>
+                <p>驗證後寫入或確認訂單已存在：<span class="outcome-dest">PostgreSQL · orders</span></p>
+                <div class="flow-step">成功後提交此 group 的 offset</div>
+              </div>
+              <div class="outcome invalid">
+                <h4>! 無效訊息</h4>
+                <p>送到共用 DLQ，envelope 標記此 group：<span class="outcome-dest">orders-dlq</span></p>
+                <div class="flow-step">確認 DLQ 後提交此 group 的來源 offset</div>
+              </div>
+            </div>
+          </article>
+        </div>
+
+        <section class="scenario-section" aria-label="Independent consumer group failure example">
+          <h3>情境例子：同一筆有效訊息，audit-1 成功、audit-2 遇到 DB 錯誤</h3>
+          <p class="section-intro">Consumer groups 有各自獨立的 offsets；一組失敗不會回滾另一組已完成的處理。</p>
+          <div class="scenario-grid">
+            <article class="scenario-card success">
+              <h4>orders-audit-1 · 成功</h4>
+              <p>PostgreSQL 寫入成功（或確認相同 order_id 已存在）。DB 正常時，其他 group 撞到唯一鍵會被安全略過，仍算處理成功。</p>
+              <span class="result">提交 audit-1 自己的 offset</span>
+            </article>
+            <article class="scenario-card failure">
+              <h4>orders-audit-2 · 暫時性 DB 錯誤</h4>
+              <p>PostgreSQL 錯誤重試 3 次；仍失敗就停止 consumer。audit-1 不受影響，audit-2 訊息會留待同一 group 稍後重試。</p>
+              <span class="result">不提交 audit-2 offset · 不送 DLQ</span>
+            </article>
+          </div>
+        </section>
+
+        <section class="dlq-detail" aria-label="When dead letter queue is used">
+          <h3>orders-dlq 幾時用？只用於無效訊息</h3>
+          <p class="section-intro">Null payload、無效 JSON、UTF-8 解碼失敗或訂單 schema 驗證失敗，會由各自的 consumer group 獨立處理。</p>
+          <div class="dlq-grid">
+            <div class="dlq-node">
+              <strong>來源訊息無效</strong>
+              <p>例如 null、壞 JSON、缺少必要訂單欄位。</p>
+            </div>
+            <div class="dlq-arrow" aria-hidden="true">→</div>
+            <div class="dlq-node">
+              <strong>寫入共用 orders-dlq</strong>
+              <p>每個 envelope 記錄來源 topic / partition / offset、原因及 consumer group；不同 group 可各自產生一筆。</p>
+              <div class="group-offsets">
+                <span>consumer_group=orders-to-postgres</span>
+                <span>consumer_group=orders-audit-1</span>
+                <span>consumer_group=orders-audit-2</span>
+              </div>
+            </div>
+            <div class="dlq-arrow" aria-hidden="true">→</div>
+            <div class="dlq-node">
+              <strong>確認 delivery 後提交來源 offset</strong>
+              <p>DLQ delivery 失敗或 timeout：不提交來源 offset，保留稍後重試。</p>
+            </div>
+          </div>
+          <p class="dlq-note"><strong>重要：</strong>PostgreSQL 寫入錯誤不會送 DLQ。若 DLQ delivery 已成功但來源 offset commit 失敗，重試可能留下重複 envelope（at-least-once）。</p>
+        </section>
+      </section>
+    </div>
+
+    <section class="notes" aria-label="可靠性注意事項">
+      <article class="card note warning">
+        <h3>Broker 寫入保護</h3>
+        <p>兩份副本且 min ISR=2。若 ISR 少於 2，寫入可能暫停或失敗，不會以單一副本確認成功。</p>
+      </article>
+      <article class="card note">
+        <h3>錯誤及重試</h3>
+        <p>PostgreSQL 錯誤重試 3 次；耗盡後 consumer 停止並保留來源 offset，不會把資料庫錯誤送進 DLQ。DLQ 則採 at-least-once，來源 offset commit 失敗時可能有重複封套。</p>
+      </article>
+    </section>
+
+    <footer>架構資料依據專案 Docker Compose、Python 程式與 Kafka 多 Broker / DLQ 教學檔。</footer>
+  </main>
+</body>
+</html>
